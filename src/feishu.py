@@ -141,7 +141,7 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
         actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "打开交互看板"},
                         "type": "primary", "url": pages_url})
         actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "主力资金明细"},
-                        "type": "default", "url": pages_url.rstrip("/") + "#flow"})
+                        "type": "default", "url": pages_url.rstrip("/") + "/#flow"})
     if repo_url:
         actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "策略与部署说明"},
                         "type": "default", "url": repo_url})

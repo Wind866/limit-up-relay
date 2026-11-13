@@ -60,6 +60,21 @@ git push -u origin main
 
 定时任务偶有 5~15 分钟延迟，属 GitHub 正常现象。
 
+### 排错：Actions 前几步成功，但「配置 GitHub Pages」失败 / 看板 404
+
+**现象**：Actions 里采集、评分、快照提交全部成功，只有 `配置 GitHub Pages` 一步报红，`https://<owner>.github.io/<repo>/` 返回 404，飞书卡片里的「打开交互看板」「主力资金明细」按钮也全部 404。
+
+**原因**：仓库的 Pages 站点尚未创建，或构建源不是 GitHub Actions，`actions/configure-pages` 读取站点配置失败，导致上传和部署步骤被跳过。
+
+**处理**（任选其一，建议都做）：
+
+1. 网页上进入 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**；
+2. 本工作流已在 `配置 GitHub Pages` 步骤设置 `enablement: true`，会在下次运行时自动创建站点并设为 Actions 构建源，无需手动设置。
+
+然后到 **Actions → 对应运行 → Re-run all jobs**（或手动 Run workflow）重跑一次。部署成功后 Pages 链接即可访问。`enablement: true` 需要 `pages: write` 权限，本工作流已声明。
+
+页面内 `#flow`、`#sector`、`#review`、`#about` 锚点可直接跳转到「主力资金流向 / 板块强度 / 历史复盘 / 策略说明」页签。
+
 ---
 
 ## 三、本地运行

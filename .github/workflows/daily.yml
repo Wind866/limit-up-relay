@@ -91,6 +91,10 @@ jobs:
 
       - name: 配置 GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          # 仓库未手动启用 Pages 时自动创建站点并设为 GitHub Actions 构建源，
+          # 避免因 Settings 未配置导致 configure-pages 报错、整个 job 失败、站点 404。
+          enablement: true
 
       - name: 上传 Pages 产物
         uses: actions/upload-pages-artifact@v3

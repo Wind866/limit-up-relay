@@ -684,17 +684,32 @@
   }
 
   /* ---------------- 事件 ---------------- */
+  var TAB_NAMES = ['pool', 'flow', 'sector', 'review', 'about'];
+
+  // 支持通过 #flow / #sector 等锚点直达对应页签（飞书卡片按钮使用）
+  function activateTab(name, syncHash) {
+    if (TAB_NAMES.indexOf(name) < 0) name = 'pool';
+    state.tab = name;
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) {
+      x.classList.toggle('active', x.dataset.tab === name);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.tab-panel'), function (p) {
+      p.classList.toggle('active', p.id === 'panel-' + name);
+    });
+    if (syncHash && window.history && history.replaceState) {
+      history.replaceState(null, '', '#' + name);
+    }
+  }
+
   function bind() {
     $('tabs').addEventListener('click', function (e) {
       var b = e.target.closest('.tab');
       if (!b) return;
-      state.tab = b.dataset.tab;
-      Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) {
-        x.classList.toggle('active', x === b);
-      });
-      Array.prototype.forEach.call(document.querySelectorAll('.tab-panel'), function (p) {
-        p.classList.toggle('active', p.id === 'panel-' + state.tab);
-      });
+      activateTab(b.dataset.tab, true);
+    });
+
+    window.addEventListener('hashchange', function () {
+      activateTab((location.hash || '').replace(/^#/, ''), false);
     });
 
     $('searchInput').addEventListener('input', function (e) { state.filters.q = e.target.value; renderPool(); });
@@ -808,6 +823,7 @@
     state.rows = reRank(D.candidates, state.weights);
     renderAll();
     bind();
+    activateTab((location.hash || '').replace(/^#/, ''), false);
   }
 
   init();
