@@ -1,1 +1,1 @@
-window.__HISTORY__ = {"days":[{"date":"2026-11-13","limit_up":41,"broken":11,"break_rate":21.2,"max_board":4,"sentiment":"活跃","top_score":86.2,"a_count":15,"avg_pct":null,"win_rate":null}],"updated_at":"2026-11-13 12:02:41 +0800"};
+window.__HISTORY__ = {"days":[{"date":"2026-11-13","limit_up":38,"broken":15,"break_rate":28.3,"max_board":4,"sentiment":"修复","top_score":86.2,"a_count":17,"avg_pct":null,"win_rate":null}],"updated_at":"2026-11-13 13:11:20 +0800"};
