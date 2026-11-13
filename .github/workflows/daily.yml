@@ -97,15 +97,29 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
       # 把 cron 对应的计划时刻写进环境变量，供脚本做延迟守卫。
-      # 用 case 而不是嵌套三元表达式，便于日后改时间时一眼改对。
+      # 注意：写进 $GITHUB_ENV 的值在本步骤内读不到（只对后续步骤生效），
+      # 所以这里用 shell 变量 planned 中转，不能直接 echo ${EXPECT_HHMM}。
+      # 若 schedule 触发但 cron 对不上（改了 on.schedule 忘了改这里），
+      # 直接 ::error:: 失败——否则守卫会静默失效，和之前踩过的坑一样。
       - name: 推导计划时刻（延迟守卫）
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          EVENT: ${{ github.event_name }}
         run: |
-          case "${{ github.event.schedule }}" in
-            '37 7 * * 1-5') echo "EXPECT_HHMM=1537" >> "$GITHUB_ENV" ;;
-            '7 5 * * 1-5')  echo "EXPECT_HHMM=1307" >> "$GITHUB_ENV" ;;
-            *)              echo "EXPECT_HHMM="     >> "$GITHUB_ENV" ;;
+          planned=""
+          case "$SCHEDULE" in
+            '37 7 * * 1-5') planned="1537" ;;
+            '7 5 * * 1-5')  planned="1307" ;;
           esac
-          echo "计划时刻：${EXPECT_HHMM:-（非定时触发，不做延迟判定）}"
+          echo "EXPECT_HHMM=$planned" >> "$GITHUB_ENV"
+          if [ -n "$planned" ]; then
+            echo "计划时刻：${planned:0:2}:${planned:2} —— 延迟守卫已启用"
+          elif [ "$EVENT" = "schedule" ]; then
+            echo "::error::cron「$SCHEDULE」在本步骤没有对应时刻，延迟守卫会失效。请同步 on.schedule 与这里的分支。"
+            exit 1
+          else
+            echo "计划时刻：（$EVENT 触发，不做延迟判定）"
+          fi
 
       - name: 运行策略（采集 / 复盘 / 评分 / 推送）
         if: github.event_name != 'push'   # push 触发时数据刚提交过，只负责部署
