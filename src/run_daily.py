@@ -6,7 +6,7 @@
     python src/run_daily.py --no-push      # 不推飞书
     python scripts/serve.py                # 本地预览看板 http://127.0.0.1:8000
 
-GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 15:30 自动执行。
+GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 13:07（盘中快照）、15:37（收盘定稿）自动执行。
 """
 
 from __future__ import annotations
@@ -47,18 +47,31 @@ def log(msg: str) -> None:
 
 
 LATE_GRACE_MINUTES = 20          # 超过这个延迟就要在日志与卡片上标注
-INTRADAY_EXPECT = "1300"         # 盘中快照的计划时刻（HHMM）
+INTRADAY_HOUR = "13"             # 盘中快照的计划小时（HH），必须与 daily.yml 的盘中 cron 一致
 INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：只更新看板，不推卡片
 
 
 def late_minutes(now: ds.dt.datetime, expect: str) -> int:
-    """返回比计划时刻晚多少分钟。expect 形如 '1530'，未提供或非法时返回 0。"""
+    """返回比计划时刻晚多少分钟。expect 形如 '1537'，未提供或非法时返回 0。"""
     expect = (expect or "").strip()
     if len(expect) != 4 or not expect.isdigit():
         return 0
     planned = now.replace(hour=int(expect[:2]), minute=int(expect[2:]),
                           second=0, microsecond=0)
     return int((now - planned).total_seconds() // 60)
+
+
+def should_skip_intraday_push(expect: str, late: int, status: str) -> bool:
+    """盘中快照是否应放弃推送飞书。
+
+    两种情形都算「数据已非盘中口径」：
+      1) 迟到 ≥90 分钟；
+      2) 迟到不多但运行时刻已经收盘（如 13:07 的任务 15:10 才起来）。
+    用小时前缀判断而非精确比对 HHMM，避免改 cron 时这里忘了同步（旧写法踩过这个坑）。
+    """
+    if not expect.startswith(INTRADAY_HOUR):
+        return False
+    return late >= INTRADAY_MAX_LATE_MINUTES or status != "盘中"
 
 
 def main() -> int:
@@ -80,14 +93,15 @@ def main() -> int:
 
     # ---------- 0. 定时延迟守卫 ----------
     # GitHub 的 schedule 只保证"尽力而为"，实测可能晚几小时才触发。
-    # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1530），其余触发为空。
+    # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1537），其余触发为空。
     expect = os.getenv("EXPECT_HHMM", "")
     late = late_minutes(now, expect)
     if late >= LATE_GRACE_MINUTES:
         log(f"⚠️ 计划 {expect[:2]}:{expect[2:]} 运行，实际晚了 {late} 分钟（调度延迟）")
-    if expect == INTRADAY_EXPECT and late >= INTRADAY_MAX_LATE_MINUTES:
+    # 盘中快照：迟到太久或已经收盘，就不再推"盘中"卡片（看板照常更新）
+    if not args.demo and should_skip_intraday_push(expect, late, status):
         args.no_push = True
-        log(f"盘中快照迟到 {late} 分钟，数据已非盘中口径 → 跳过飞书推送，仅更新看板")
+        log(f"盘中快照迟到 {late} 分钟（当前状态：{status}）→ 数据已非盘中口径，跳过飞书推送，仅更新看板")
 
     if target.weekday() >= 5 and not args.force and not args.demo:
         log(f"{target} 为周末，非交易日，跳过（--force 可强制运行）")

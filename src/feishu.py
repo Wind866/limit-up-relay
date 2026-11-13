@@ -79,7 +79,7 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
         lines.insert(0, f"> ⚠️ **数据源降级（{meta.get('quality', '--')}）**：主接口不可用，"
                         f"已自动切换备用源；{fund_note}。详情见看板「数据源与容灾」。")
     if meta.get("market_status") == "盘中":
-        lines.append("> 当前为盘中实时快照，收盘后 15:30 会再跑一次定稿")
+        lines.append("> 当前为盘中实时快照，收盘后 15:37 会再跑一次定稿")
 
     late = int(meta.get("late_minutes") or 0)
     if late >= 20:
