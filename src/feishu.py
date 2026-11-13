@@ -56,6 +56,7 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
     cands = report["candidates"]
     top = [c for c in cands if c["grade"] in ("A", "B")][:6]
     date = meta["date"]
+    status_label = "盘中快照" if meta.get("market_status") == "盘中" else "收盘定稿"
 
     template = "red" if s["level"] in ("亢奋", "活跃") else \
                "orange" if s["level"] == "修复" else \
@@ -152,8 +153,8 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
     return {
         "config": {"wide_screen_mode": True, "enable_forward": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"涨停次日接力观察池 · {date}"},
-            "subtitle": {"tag": "plain_text", "content": f"情绪{s['level']} | 共 {len(cands)} 只入池 | 自动运行"},
+            "title": {"tag": "plain_text", "content": f"涨停次日接力观察池 · {date} · {status_label}"},
+            "subtitle": {"tag": "plain_text", "content": f"情绪{s['level']} | 共 {len(cands)} 只入池 | {status_label} | 自动运行"},
             "template": template,
         },
         "elements": elements,

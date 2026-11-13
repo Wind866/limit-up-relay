@@ -1,10 +1,13 @@
 name: 每日涨停接力策略
 
-# 北京时间 = UTC+8。收盘后 15:30 生成次日接力观察池并推送飞书。
+# 北京时间 = UTC+8。每个交易日跑两次，两次都会推送飞书：
+#   13:00 盘中实时快照（UTC 05:00）→ 观察盘中封板与资金变化
+#   15:30 收盘定稿（UTC 07:30）→ 次日接力观察池正式版
 # GitHub Actions cron 使用 UTC；GitHub 定时偶有 5~15 分钟延迟，属正常现象。
 on:
   schedule:
-    - cron: '30 7 * * 1-5'   # 周一至周五 15:30 北京时间
+    - cron: '0 5 * * 1-5'    # 周一至周五 13:00 北京时间（盘中快照）
+    - cron: '30 7 * * 1-5'   # 周一至周五 15:30 北京时间（收盘定稿）
   workflow_dispatch:
     inputs:
       mode:
@@ -99,6 +102,8 @@ jobs:
           python src/run_daily.py $ARGS
 
       - name: 提交每日快照
+        env:
+          TZ: Asia/Shanghai
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -106,7 +111,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "数据无变化，跳过提交"
           else
-            git commit -m "chore(data): 每日策略快照 $(date +%F)"
+            git commit -m "chore(data): 每日策略快照 $(date +'%F %H:%M')"
             git push
           fi
 
