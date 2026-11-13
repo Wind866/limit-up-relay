@@ -8,6 +8,12 @@ on:
   schedule:
     - cron: '0 5 * * 1-5'    # 周一至周五 13:00 北京时间（盘中快照）
     - cron: '30 7 * * 1-5'   # 周一至周五 15:30 北京时间（收盘定稿）
+  # 兜底：定时漏跑时，只要数据提交进仓库，就重新部署看板（不重复推飞书、不再提交）
+  push:
+    branches: [main]
+    paths:
+      - 'docs/data/**'
+      - 'data/snapshots/**'
   workflow_dispatch:
     inputs:
       mode:
@@ -88,6 +94,7 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
       - name: 运行策略（采集 / 复盘 / 评分 / 推送）
+        if: github.event_name != 'push'   # push 触发时数据刚提交过，只负责部署
         env:
           TZ: Asia/Shanghai
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
@@ -102,6 +109,7 @@ jobs:
           python src/run_daily.py $ARGS
 
       - name: 提交每日快照
+        if: github.event_name != 'push'   # 防止「提交→触发→再提交」死循环
         env:
           TZ: Asia/Shanghai
         run: |
