@@ -43,6 +43,27 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      # 站点未启用时提前失败并给出中文指引，避免白跑一遍采集与推送。
+      # 该 action 的自动启用参数需要额外 PAT，默认 GITHUB_TOKEN 权限不足。
+      - name: 检查 Pages 是否已启用
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          code=$(curl -s -o /tmp/pages.json -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/pages") || code="000"
+          if [ "$code" = "404" ]; then
+            echo "::error::GitHub Pages 未启用。请到仓库 Settings → Pages → Build and deployment → Source 选择「GitHub Actions」，然后重新运行本工作流。"
+            exit 1
+          fi
+          if [ "$code" = "200" ]; then
+            echo "Pages 已启用，继续部署"
+          else
+            echo "::warning::无法确认 Pages 状态（HTTP $code），继续尝试部署"
+          fi
+
       - name: 检出仓库
         uses: actions/checkout@v4
 
@@ -91,10 +112,6 @@ jobs:
 
       - name: 配置 GitHub Pages
         uses: actions/configure-pages@v5
-        with:
-          # 仓库未手动启用 Pages 时自动创建站点并设为 GitHub Actions 构建源，
-          # 避免因 Settings 未配置导致 configure-pages 报错、整个 job 失败、站点 404。
-          enablement: true
 
       - name: 上传 Pages 产物
         uses: actions/upload-pages-artifact@v3

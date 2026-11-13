@@ -45,7 +45,7 @@ git push -u origin main
 若 `git push` 卡住或超时，多为网络问题，检查代理后重试。可用 `git config --global http.proxy http://127.0.0.1:端口` 配置（端口换成你本机代理的实际端口）。
 
 1. 在 GitHub 网页右上角 **+ → New repository** 创建**空仓库**（建议名 `limit-up-relay`，选 **Public**，**不要勾选** Add a README / .gitignore / license，否则首次 push 会冲突），然后推送整个目录（**含 `.github/`、`.env.example`、`docs/data/`、`data/snapshots/`**）。`.gitignore` 会排除 `__pycache__/`、`.env`、`*.log`、预览截图等。
-2. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。
+2. **（必需，别跳过）** 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。这一步是手动的：工作流用的默认 `GITHUB_TOKEN` 无权创建 Pages 站点，跳过它会导致 `配置 GitHub Pages` 步骤失败、看板 404。
 3. 飞书群 → 设置 → 群机器人 → 添加「自定义机器人」，复制 Webhook，开启「加签」并复制密钥。
 4. 仓库 **Settings → Secrets and variables → Actions → New repository secret**，添加：
 
@@ -66,12 +66,12 @@ git push -u origin main
 
 **原因**：仓库的 Pages 站点尚未创建，或构建源不是 GitHub Actions，`actions/configure-pages` 读取站点配置失败，导致上传和部署步骤被跳过。
 
-**处理**（任选其一，建议都做）：
+**处理**：
 
-1. 网页上进入 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**；
-2. 本工作流已在 `配置 GitHub Pages` 步骤设置 `enablement: true`，会在下次运行时自动创建站点并设为 Actions 构建源，无需手动设置。
+1. 网页上进入 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**，保存。这是唯一必需的一步，且**无法由工作流自动完成**：`actions/configure-pages` 的 `enablement` 参数要求提供额外的 Personal Access Token，默认 `GITHUB_TOKEN` 权限不足，所以本工作流不启用它，而是在前面加了一步中文检查，未启用时会打印这条指引并提前失败。
+2. 到 **Actions → 每日涨停接力策略 → Run workflow → Run workflow** 手动新跑一次。**不要用失败运行里的 Re-run**：Re-run 沿用旧提交当时的 workflow 定义，修复不会生效。
 
-然后到 **Actions → 对应运行 → Re-run all jobs**（或手动 Run workflow）重跑一次。部署成功后 Pages 链接即可访问。`enablement: true` 需要 `pages: write` 权限，本工作流已声明。
+部署成功后 Pages 链接即可访问，飞书卡片里的按钮也会随之恢复。
 
 页面内 `#flow`、`#sector`、`#review`、`#about` 锚点可直接跳转到「主力资金流向 / 板块强度 / 历史复盘 / 策略说明」页签。
 
