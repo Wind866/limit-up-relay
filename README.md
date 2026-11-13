@@ -22,18 +22,29 @@
 
 ## 二、部署到 GitHub（5 步）
 
-> **重要**：`.github/workflows/daily.yml` 是隐藏目录下的文件。用网页拖拽上传时极易漏传，**漏传后每日自动运行不会发生**。推荐用 `git push`，或上传后到仓库 Actions 页确认「每日涨停接力策略」工作流确实存在。
+> **两个最容易踩的坑**
+> 1. `.github/workflows/daily.yml` 位于隐藏目录，**用网页拖拽上传极易漏传**，漏了就完全没有自动运行。请走 `git push`。
+> 2. 仓库必须设为 **Public**：免费版 GitHub 账号的私有仓库无法启用 GitHub Pages（会提示升级）。
 
 ```bash
 cd limit-up-relay
-git init
+git init -b main
 git add .
-git commit -m "init: 涨停次日接力策略"
+git commit -m "init: limit-up relay strategy"
 git remote add origin https://github.com/<你的用户名>/<仓库名>.git
 git push -u origin main
 ```
 
-1. 把整个 `limit-up-relay` 目录推到新仓库（**含 `.github/`、`.env.example`、`docs/data/`、`data/snapshots/`**）。`.gitignore` 会排除 `__pycache__/`、`.env`、`*.log`、预览截图等。
+当前本地目录**已经完成** `git init` / `git add` / `git commit`（首次提交已含全部 25 个文件），所以只需执行最后两行。
+
+**首次 push 的登录方式**：本机装有 Git Credential Manager，`git push` 会弹出浏览器让你登录并授权 GitHub，点同意即可，**不需要手动创建令牌**。若没弹窗而是要求输入密码（GitHub 已不支持账号密码），二选一：
+
+- 执行 `git config --global credential.helper manager` 后重试；
+- 或到 GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) 生成勾选 `repo` 的令牌，push 时用户名填 GitHub 用户名、密码粘贴该令牌。
+
+若 `git push` 卡住或超时，多为网络问题，检查代理后重试。可用 `git config --global http.proxy http://127.0.0.1:端口` 配置（端口换成你本机代理的实际端口）。
+
+1. 在 GitHub 网页右上角 **+ → New repository** 创建**空仓库**（建议名 `limit-up-relay`，选 **Public**，**不要勾选** Add a README / .gitignore / license，否则首次 push 会冲突），然后推送整个目录（**含 `.github/`、`.env.example`、`docs/data/`、`data/snapshots/`**）。`.gitignore` 会排除 `__pycache__/`、`.env`、`*.log`、预览截图等。
 2. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。
 3. 飞书群 → 设置 → 群机器人 → 添加「自定义机器人」，复制 Webhook，开启「加签」并复制密钥。
 4. 仓库 **Settings → Secrets and variables → Actions → New repository secret**，添加：
