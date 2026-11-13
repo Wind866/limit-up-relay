@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+*.log
+preview-*.png
+probe-dom.txt
+probe2-dom.txt
+docs/_probe.html
+docs/_probe2.html
+.idea/
+.vscode/

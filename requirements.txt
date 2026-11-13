@@ -1,0 +1,6 @@
+# 后端零第三方依赖：仅使用 Python 3.10+ 标准库（urllib / json / hmac / hashlib）。
+# 前端同样零依赖：原生 JavaScript + 原生 SVG 绘图。
+#
+# 因此 GitHub Actions 不需要 pip install，本地也不需要虚拟环境。
+# 直接运行：python src/run_daily.py --no-push
+# 若你希望扩展（如 pandas / akshare），再在此文件追加即可。

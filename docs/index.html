@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="涨停次日接力策略交互看板：多因子评分、主力资金流向、板块强度与历史复盘">
+<title>涨停次日接力观察池 · 交互看板</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="brand-mark">接力</div>
+      <div class="brand-text">
+        <h1>涨停次日接力观察池</h1>
+        <p>多因子评分 · 主力资金流向 · 每日自动复盘</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <label class="date-picker" title="切换历史交易日快照">
+        <span>日期</span>
+        <select id="dateSelect"></select>
+      </label>
+      <button id="themeBtn" class="icon-btn" type="button" title="切换明暗主题" aria-label="切换明暗主题">◐</button>
+      <button id="refreshBtn" class="icon-btn" type="button" title="重新载入数据" aria-label="重新载入数据">↻</button>
+    </div>
+  </div>
+</header>
+
+<div id="demoBanner" class="banner hidden"></div>
+
+<main class="container">
+
+  <div class="source-bar" id="sourceBar"></div>
+
+  <section class="tldr card" id="tldr"></section>
+
+  <section class="kpi-grid" id="kpiGrid"></section>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="tab active" data-tab="pool" role="tab">接力观察池</button>
+    <button class="tab" data-tab="flow" role="tab">主力资金流向</button>
+    <button class="tab" data-tab="sector" role="tab">板块强度</button>
+    <button class="tab" data-tab="review" role="tab">历史复盘</button>
+    <button class="tab" data-tab="about" role="tab">策略说明</button>
+  </nav>
+
+  <!-- 观察池 -->
+  <section class="tab-panel active" id="panel-pool">
+    <div class="pool-layout">
+      <aside class="side card" id="filterSide">
+        <div class="side-head">
+          <h2>筛选与权重</h2>
+          <button id="resetAll" class="link-btn" type="button">恢复默认</button>
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">搜索代码 / 名称 / 行业</label>
+          <input id="searchInput" class="input" type="search" placeholder="如 002148 / 游戏">
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">评分区间 <b id="minScoreVal">55</b> 分以上</label>
+          <input id="minScore" class="range" type="range" min="0" max="90" step="1" value="55">
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">分档</label>
+          <div class="chips" id="gradeChips">
+            <button class="chip active" data-grade="ALL">全部</button>
+            <button class="chip" data-grade="A">A 重点</button>
+            <button class="chip" data-grade="B">B 备选</button>
+            <button class="chip" data-grade="C">C 谨慎</button>
+          </div>
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">连板高度</label>
+          <select id="boardFilter" class="input">
+            <option value="ALL">全部</option>
+            <option value="1">首板 1 板</option>
+            <option value="2">2 板</option>
+            <option value="3">3 板</option>
+            <option value="4">4 板及以上</option>
+          </select>
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">行业板块</label>
+          <select id="industryFilter" class="input"><option value="ALL">全部行业</option></select>
+        </div>
+
+        <div class="filter-block">
+          <label class="fl">排序依据</label>
+          <select id="sortSelect" class="input">
+            <option value="score">综合评分</option>
+            <option value="main_net_yi">当日主力净额</option>
+            <option value="main_net_5d_yi">5 日主力净额</option>
+            <option value="seal_ratio">封单占比</option>
+            <option value="turnover">换手率</option>
+            <option value="boards">连板高度</option>
+            <option value="float_mv_yi">流通市值</option>
+          </select>
+        </div>
+
+        <div class="weight-block">
+          <div class="side-head">
+            <h2>因子权重 <span class="hint">拖动实时重排</span></h2>
+            <button id="resetWeights" class="link-btn" type="button">重置</button>
+          </div>
+          <div id="weightSliders"></div>
+          <p class="weight-note">改权重会按「加权基础分 + 风险扣分」重算排名，用于检验策略对参数的敏感性；不改变原始行情数据。</p>
+        </div>
+      </aside>
+
+      <div class="pool-main">
+        <div class="card list-card">
+          <div class="list-head">
+            <div>
+              <h2>候选池 <span id="listCount" class="count"></span></h2>
+              <p class="sub" id="listSub"></p>
+            </div>
+            <button id="toggleFilters" class="ghost-btn mobile-only" type="button">筛选 / 权重</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="poolTable">
+              <thead>
+                <tr>
+                  <th>#</th><th>标的</th><th>综合评分</th><th>连板</th><th>行业</th>
+                  <th>封单比</th><th>换手</th><th>主力净额</th><th>5日主力</th><th>标签</th>
+                </tr>
+              </thead>
+              <tbody id="poolBody"></tbody>
+            </table>
+          </div>
+          <div class="mobile-cards" id="poolCards"></div>
+          <div id="poolEmpty" class="empty hidden">没有符合当前筛选条件的标的，试试降低评分门槛。</div>
+        </div>
+        <p class="table-foot" id="tableFoot"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 资金流向 -->
+  <section class="tab-panel" id="panel-flow">
+    <div class="card section-card" id="flowAnchor">
+      <div class="section-head">
+        <div>
+          <h2>主力资金净流入排行</h2>
+          <p class="sub">当日主力净额（大单 + 超大单），单位：亿元 · 红为净流入，绿为净流出</p>
+        </div>
+        <div class="switch" id="flowSwitch">
+          <button class="switch-btn active" data-view="chart">图</button>
+          <button class="switch-btn" data-view="table">表</button>
+        </div>
+      </div>
+      <div id="flowChart" class="chart-area"></div>
+      <div id="flowTable" class="hidden"></div>
+    </div>
+
+    <div class="two-col">
+      <div class="card section-card">
+        <h2>资金结构拆解 · 候选池 Top 8</h2>
+        <p class="sub">超大单 / 大单 / 中单 / 小单（当日，亿元）</p>
+        <div id="structureChart" class="chart-area"></div>
+      </div>
+      <div class="card section-card">
+        <h2>多周期资金共振</h2>
+        <p class="sub">当日 / 近 5 日 / 近 10 日主力净额对比（亿元）</p>
+        <div id="multiChart" class="chart-area"></div>
+      </div>
+    </div>
+
+    <div class="card section-card">
+      <h2>资金流口径与解读要点</h2>
+      <div class="notes" id="flowNotes"></div>
+    </div>
+  </section>
+
+  <!-- 板块强度 -->
+  <section class="tab-panel" id="panel-sector">
+    <div class="two-col">
+      <div class="card section-card">
+        <h2>行业涨停家数</h2>
+        <p class="sub">主流题材 vs 孤立脉冲：家数多、有连板高标的板块接力环境更好</p>
+        <div id="sectorChart" class="chart-area"></div>
+      </div>
+      <div class="card section-card">
+        <h2>连板梯队分布</h2>
+        <p class="sub">梯队是否完整、有无断层，是情绪退潮的重要信号</p>
+        <div id="ladderChart" class="chart-area"></div>
+      </div>
+    </div>
+    <div class="card section-card">
+      <h2>板块明细</h2>
+      <div id="sectorTable"></div>
+    </div>
+  </section>
+
+  <!-- 复盘 -->
+  <section class="tab-panel" id="panel-review">
+    <div class="card section-card" id="reviewRoot"></div>
+    <div class="card section-card">
+      <h2>市场情绪时间序列</h2>
+      <p class="sub">每日涨停家数 / 炸板率，来自本仓库每日快照</p>
+      <div id="historyChart" class="chart-area"></div>
+      <div id="historyTable"></div>
+    </div>
+  </section>
+
+  <!-- 策略说明 -->
+  <section class="tab-panel" id="panel-about">
+    <div class="card section-card" id="aboutRoot"></div>
+  </section>
+
+  <footer class="footer" id="footer"></footer>
+</main>
+
+<div class="mask hidden" id="mask"></div>
+<aside class="drawer hidden" id="drawer" aria-label="个股详情">
+  <div class="drawer-head">
+    <div><h2 id="drawerTitle"></h2><p id="drawerSub" class="sub"></p></div>
+    <button class="icon-btn" id="drawerClose" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<div class="tooltip hidden" id="tooltip"></div>
+
+<script src="data/latest.js"></script>
+<script src="data/history.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

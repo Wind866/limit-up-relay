@@ -1,0 +1,152 @@
+"""每日运行入口：采集 → 复盘 → 评分 → 生成看板数据 → 推送飞书。
+
+本地：
+    python src/run_daily.py                 # 抓当日真实数据（收盘后运行最佳）
+    python src/run_daily.py --demo         # 使用历史真实快照样本（离线演示）
+    python src/run_daily.py --no-push      # 不推飞书
+    python scripts/serve.py                # 本地预览看板 http://127.0.0.1:8000
+
+GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 15:30 自动执行。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from src import datasource as ds  # noqa: E402
+from src import feishu, report, strategy as st  # noqa: E402
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
+
+def market_status(now: ds.dt.datetime) -> str:
+    if now.weekday() >= 5:
+        return "休市"
+    t = now.hour * 60 + now.minute
+    if t < 9 * 60 + 15:
+        return "盘前"
+    if 9 * 60 + 15 <= t < 11 * 60 + 30 or 13 * 60 <= t < 15 * 60:
+        return "盘中"
+    if 11 * 60 + 30 <= t < 13 * 60:
+        return "午间休市"
+    return "收盘后"
+
+
+def log(msg: str) -> None:
+    print(f"[relay] {msg}", flush=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="涨停次日接力策略 · 每日运行")
+    ap.add_argument("--date", help="目标日期 YYYY-MM-DD，默认今天（北京时间）")
+    ap.add_argument("--demo", action="store_true", help="使用随仓库附带的历史真实快照样本")
+    ap.add_argument("--no-push", action="store_true", help="不推送飞书")
+    ap.add_argument("--force", action="store_true", help="跳过交易日检查 / 强制推送")
+    ap.add_argument("--config", default=os.path.join(ROOT, "config.json"))
+    ap.add_argument("--root", default=ROOT)
+    args = ap.parse_args()
+
+    with open(args.config, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+
+    now = ds.now_cn()
+    target = ds.dt.date.fromisoformat(args.date) if args.date else now.date()
+    status = market_status(now)
+
+    if target.weekday() >= 5 and not args.force and not args.demo:
+        log(f"{target} 为周末，非交易日，跳过（--force 可强制运行）")
+        return 0
+
+    # ---------- 1. 采集 ----------
+    demo_path = os.path.join(args.root, "docs", "data", "demo.json")
+    if args.demo:
+        if not os.path.exists(demo_path):
+            log(f"演示样本不存在：{demo_path}")
+            return 2
+        snap = ds.load_demo(demo_path)
+        log(f"使用历史真实快照样本：{snap['date']}（标记为演示数据）")
+        log("注意：演示模式会覆盖 docs/data/latest.*；恢复真实数据请重新运行 python src/run_daily.py --no-push")
+    else:
+        try:
+            log(f"采集 {target} 涨停池 / 炸板池 / 跌停池 / 资金流…")
+            snap = ds.collect(day=target, flow_top=0)
+        except ds.DataSourceError as exc:
+            log(f"行情接口不可用：{exc}")
+            if os.path.exists(demo_path):
+                snap = ds.load_demo(demo_path)
+                log(f"降级到历史真实快照样本 {snap['date']}（演示数据不推送）")
+            else:
+                return 3
+
+        qdate = snap.get("date")
+        if qdate != target.isoformat() and not args.force:
+            log(f"接口返回最近交易日 {qdate}，与 {target} 不一致 → 判定为节假日/休市，"
+                "仅生成本地数据，不推送飞书")
+            args.no_push = True
+
+        # 可选增强：对最高分候选尝试补抓逐日资金流（该接口偶发限流，失败不影响主流程）
+        if snap.get("limit_up"):
+            prelim = st.build_candidates(snap, cfg)
+            picked = [(c["code"], c["secid"]) for c in prelim[:cfg.get("flow_detail_top", 6)]]
+            snap["flow_history"] = {}
+            for code, secid in picked:
+                try:
+                    snap["flow_history"][code] = ds.fetch_flow_history(secid, retries=1)
+                except ds.DataSourceError:
+                    pass
+            got = sum(1 for v in snap["flow_history"].values() if v)
+            log(f"逐日资金流明细：{got}/{len(picked)} 只可用（多周期资金已由批量接口覆盖）")
+
+    # ---------- 2. 复盘 ----------
+    snap_dir = os.path.join(args.root, "data", "snapshots")
+    if snap.get("is_demo"):
+        review = {"available": False, "reason": "演示模式不做复盘", "next_day": snap.get("date")}
+    else:
+        review = report.compute_review(snap, cfg, snap_dir)
+    if review.get("available"):
+        o = review["overall"]
+        log(f"复盘：样本 {o['count']} 只，次日平均 {o['avg_pct']:+.2f}%，胜率 {o['win_rate']}%")
+
+    # ---------- 3. 生成报告 ----------
+    hist_path = os.path.join(args.root, "docs", "data", "history.json")
+    sentiment = st.market_sentiment(snap)
+    sectors = st.sector_strength(snap, snap.get("quotes", {}))
+    cands = st.build_candidates(snap, cfg, sectors)
+    days = report.history_index(hist_path, snap["date"], snap, sentiment, cands, review)
+    result = report.build_report(snap, cfg, review, days, status)
+    files = report.write_outputs(result, snap, cfg, args.root)
+    log("已生成：" + ", ".join(files))
+
+    # ---------- 4. 飞书推送 ----------
+    if args.no_push:
+        log("按参数跳过飞书推送")
+        push_result = {"skipped": True, "reason": "--no-push"}
+    else:
+        push_result = feishu.push(
+            result, force=os.getenv("FORCE_PUSH") == "1" or args.force
+        )
+    log(f"飞书推送：{json.dumps(push_result, ensure_ascii=False)[:300]}")
+
+    # ---------- 5. 终端摘要 ----------
+    s = result["sentiment"]
+    log(f"=== {snap['date']} | 情绪 {s['level']} | 涨停 {s['limit_up']} / 炸板 {s['broken']} "
+        f"/ 跌停 {s['limit_down']} | 最高 {s['max_board']} 板 | A 档 "
+        f"{sum(1 for c in cands if c['grade'] == 'A')} 只 ===")
+    for c in cands[:5]:
+        log(f"  {c['rank']:>2}. {c['name']}({c['code']}) {c['score']}分 {c['grade']} "
+            f"{c['boards']}板 {c['industry']} 主力{c['main_net_yi']}亿")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

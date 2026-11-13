@@ -1,0 +1,102 @@
+name: 每日涨停接力策略
+
+# 北京时间 = UTC+8。收盘后 15:30 生成次日接力观察池并推送飞书。
+# GitHub Actions cron 使用 UTC；GitHub 定时偶有 5~15 分钟延迟，属正常现象。
+on:
+  schedule:
+    - cron: '30 7 * * 1-5'   # 周一至周五 15:30 北京时间
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 运行模式
+        required: false
+        default: close
+        type: choice
+        options:
+          - close
+          - demo
+      force:
+        description: 跳过交易日检查（节假日补跑时用）
+        required: false
+        default: false
+        type: boolean
+      push:
+        description: 推送飞书
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: relay-daily
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 推导看板地址
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          DEFAULT_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${REPO_NAME}/"
+          if [ -z "$PAGES_URL" ]; then
+            echo "PAGES_URL=$DEFAULT_URL" >> "$GITHUB_ENV"
+          fi
+          echo "看板地址：${PAGES_URL:-$DEFAULT_URL}"
+        env:
+          PAGES_URL: ${{ secrets.PAGES_URL }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+
+      - name: 运行策略（采集 / 复盘 / 评分 / 推送）
+        env:
+          TZ: Asia/Shanghai
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          ARGS=""
+          if [ "${{ inputs.mode }}" = "demo" ]; then ARGS="--demo"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ inputs.push }}" = "false" ]; then ARGS="$ARGS --no-push"; fi
+          python src/run_daily.py $ARGS
+
+      - name: 提交每日快照
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data data/snapshots
+          if git diff --staged --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "chore(data): 每日策略快照 $(date +%F)"
+            git push
+          fi
+
+      - name: 配置 GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: 部署 Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
