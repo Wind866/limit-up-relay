@@ -70,6 +70,14 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
     ]
     if meta.get("is_demo"):
         lines.insert(0, f"> ⚠️ 演示数据：{meta.get('demo_note')}")
+    if meta.get("is_stale"):
+        lines.insert(0, f"> ⚠️ {meta.get('stale_note')}")
+    if meta.get("degraded"):
+        qg = (meta.get("source_health") or {}).get("groups", {}).get("quotes", {})
+        fund_note = ("资金口径已切换，跨日分数不可直接比较"
+                     if not qg.get("fund_comparable", True) else "资金口径与历史一致")
+        lines.insert(0, f"> ⚠️ **数据源降级（{meta.get('quality', '--')}）**：主接口不可用，"
+                        f"已自动切换备用源；{fund_note}。详情见看板「数据源与容灾」。")
     if meta.get("market_status") == "盘中":
         lines.append("> 当前为盘中实时快照，收盘后 15:30 会再跑一次定稿")
 
@@ -130,8 +138,9 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
         {"tag": "hr"},
         _md("**次日观察要点**：竞价高开 2%~6% 且量能匹配、板块梯队完整；"
             "高开 >8% 或低开 >2% 视为分歧。跌破前一日涨停价视为逻辑失效。"),
-        _md(f"<font color='grey'>数据来源：{meta['source']}｜时点 {meta['as_of']}（北京时间）。"
-            "主力资金为按成交单笔金额推断的统计量，非席位真实资金。</font>"),
+        _md(f"<font color='grey'>数据来源：{meta['source']}｜时点 {meta['as_of']}（北京时间）"
+            f"｜数据质量 {meta.get('quality', '--')}。主力资金为按成交单笔金额推断的统计量，"
+            "非席位真实资金。备用源口径可能与主源不同，跨日比较需谨慎。</font>"),
         _md("<font color='grey'>**免责声明**：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。"
             "市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，"
             "必要时咨询持牌专业机构。过往表现不预示未来收益。</font>"),
@@ -143,6 +152,8 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
                         "type": "primary", "url": pages_url})
         actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "主力资金明细"},
                         "type": "default", "url": pages_url.rstrip("/") + "/#flow"})
+        actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "数据源状态"},
+                        "type": "default", "url": pages_url.rstrip("/") + "/#about"})
     if repo_url:
         actions.append({"tag": "button", "text": {"tag": "plain_text", "content": "策略与部署说明"},
                         "type": "default", "url": repo_url})

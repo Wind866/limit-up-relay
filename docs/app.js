@@ -227,18 +227,24 @@
   function renderHeader() {
     document.documentElement.setAttribute('data-theme', state.theme);
     $('themeBtn').textContent = state.theme === 'light' ? '◐' : '☀';
-    if (D.meta.is_demo) {
+    if (D.meta.is_stale || D.meta.is_demo) {
       $('demoBanner').classList.remove('hidden');
-      $('demoBanner').textContent = '⚠ ' + (D.meta.demo_note || '演示数据，非当前行情');
+      $('demoBanner').textContent = '⚠ ' +
+        (D.meta.stale_note || D.meta.demo_note || '非当前行情数据');
     } else {
       $('demoBanner').classList.add('hidden');
     }
     var m = D.meta, s = D.sentiment;
+    var qMap = { full: '主源完整', partial: '备用源·部分口径', minimal: '备用源·量价口径', unknown: '口径未知' };
+    var qLabel = qMap[m.quality] || m.quality || '口径未知';
+    var qStyle = m.degraded ? ' style="color:var(--up);border-color:var(--up)"' : '';
+    var asOf = String(m.as_of || '').replace(/\s*[+-]\d{4}\s*$/, '');
     $('sourceBar').innerHTML =
       '<span class="tag ' + (m.market_status === '盘中' ? 'live' : '') + '">' + esc(m.market_status) + '</span>' +
       '<span>交易日 <b>' + esc(m.date) + '</b></span>' +
-      '<span>数据时点 ' + esc(m.as_of) + '（北京时间）</span>' +
-      '<span>来源 ' + esc(m.source) + '</span>' +
+      '<span>数据时点 ' + esc(asOf) + '（北京时间）</span>' +
+      '<span class="sb-source">来源 ' + esc(m.source) + '</span>' +
+      '<span class="tag"' + qStyle + '>数据源 ' + esc(qLabel) + '</span>' +
       '<span>策略版本 ' + esc(m.version) + '</span>';
 
     var emotionCls = (s.level === '退潮' || s.level === '分歧') ? 'calm' :
@@ -458,17 +464,47 @@
   }
 
   /* ---------------- 资金 Tab ---------------- */
+  function renderFlowAlert() {
+    var sh = D.meta.source_health || {};
+    var qg = (sh.groups && sh.groups.quotes) || {};
+    var fund = qg.fund_source || (D.meta.quality === 'full' ? 'eastmoney' : 'none');
+    var msgs = [];
+    if (fund === 'none') {
+      msgs.push('本期全部资金接口不可用，主力资金拆解为空，资金因子按中性 50 分计，下方图表无数据。');
+    } else if (fund === 'sina') {
+      msgs.push('资金拆解已切换到新浪「主动买卖单」口径，与东方财富「大单+超大单」口径不等价：跨日分数不可直接比较，且该源不提供 5 日/10 日多周期。');
+    } else if (fund === 'mixed') {
+      msgs.push('部分个股资金来自新浪备用源，与其余个股口径不同，横向与跨日比较需谨慎。');
+    }
+    if (D.meta.degraded && fund !== 'none') {
+      msgs.push('本期已启用备用数据源，封板质量或板块字段可能缺失，评分与历史快照不完全可比。');
+    }
+    var el = $('flowAlert');
+    if (!msgs.length) { el.innerHTML = ''; return; }
+    el.innerHTML = '<div class="plan-box" style="border-left:4px solid var(--up);margin:0 0 12px">' +
+      msgs.map(function (t) {
+        return '<div style="font-size:12.5px;line-height:1.7;color:var(--text-2)">⚠ ' + esc(t) + '</div>';
+      }).join('') + '</div>';
+  }
+
   function renderFlow() {
+    renderFlowAlert();
+    var noFund = !D.flow_leaders.length;
+    var emptyHtml = '<div class="plan-box" style="border-left:4px solid var(--up)">' +
+      '本期未取到主力资金拆解，资金流排行与个股资金图表为空。' +
+      '系统已按多源容灾链自动降级，评分中的资金因子按中性 50 分计；' +
+      '可在「策略说明 → 数据源与容灾」查看每个接口的实测状态。</div>' + srcNote();
     var top = D.flow_leaders.slice(0, 15).map(function (f) {
       return { label: f.name, value: f.main_net_yi,
                tip: f.name + '（' + f.code + '）当日主力净额 ' + num(f.main_net_yi, 2) + ' 亿，评分 ' + f.score,
                text: signed(f.main_net_yi, 2) };
     });
-    $('flowChart').innerHTML = '<div class="chart-box">' + svgBarH(top, { rowH: 27, labelW: 96, padR: 68 }) + '</div>' +
+    $('flowChart').innerHTML = noFund ? emptyHtml :
+      ('<div class="chart-box">' + svgBarH(top, { rowH: 27, labelW: 96, padR: 68 }) + '</div>' +
       '<div class="legend"><span><i style="background:var(--up)"></i>主力净流入</span>' +
-      '<span><i style="background:var(--down)"></i>主力净流出</span><span>单位：亿元</span></div>' + srcNote();
+      '<span><i style="background:var(--down)"></i>主力净流出</span><span>单位：亿元</span></div>' + srcNote());
 
-    $('flowTable').innerHTML = '<div class="scroll-x"><table class="simple-table"><thead><tr>' +
+    $('flowTable').innerHTML = noFund ? emptyHtml : ('<div class="scroll-x"><table class="simple-table"><thead><tr>' +
       '<th>标的</th><th>行业</th><th>评分</th><th>当日主力(亿)</th><th>主力占比</th>' +
       '<th>5日(亿)</th><th>10日(亿)</th><th>超大单(亿)</th></tr></thead><tbody>' +
       D.flow_leaders.map(function (f) {
@@ -478,22 +514,30 @@
           signed(f.main_net_5d_yi, 2) + '</td><td class="' + tone(f.main_net_10d_yi) + '">' +
           signed(f.main_net_10d_yi, 2) + '</td><td class="' + tone(f.super_net_yi) + '">' +
           signed(f.super_net_yi, 2) + '</td></tr>';
-      }).join('') + '</tbody></table></div>' + srcNote();
+      }).join('') + '</tbody></table></div>' + srcNote());
 
     var structGroups = D.candidates.slice(0, 8).map(function (c) {
       return { label: c.name.slice(0, 4), values: [c.super_net_yi, c.big_net_yi, c.mid_net_yi, c.small_net_yi] };
     });
-    $('structureChart').innerHTML = '<div class="chart-box">' + svgGroupedBars(structGroups, [
-      { name: '超大单', color: UP }, { name: '大单', color: '#f08b5b' },
-      { name: '中单', color: ACC }, { name: '小单', color: '#8b95a5' }
-    ], { unit: ' 亿', height: 300 }) + '</div>' + srcNote();
+    var anyValue = function (groups) {
+      return groups.some(function (g) {
+        return g.values.some(function (v) { return v !== null && v !== undefined; });
+      });
+    };
+    var noDataBox = '<div class="plan-box">本期无可用资金拆解数据，图表留空（不以 0 冒充真实净额）。</div>' + srcNote();
+    $('structureChart').innerHTML = anyValue(structGroups) ?
+      ('<div class="chart-box">' + svgGroupedBars(structGroups, [
+        { name: '超大单', color: UP }, { name: '大单', color: '#f08b5b' },
+        { name: '中单', color: ACC }, { name: '小单', color: '#8b95a5' }
+      ], { unit: ' 亿', height: 300 }) + '</div>' + srcNote()) : noDataBox;
 
     var multiGroups = D.candidates.slice(0, 8).map(function (c) {
       return { label: c.name.slice(0, 4), values: [c.main_net_yi, c.main_net_5d_yi, c.main_net_10d_yi] };
     });
-    $('multiChart').innerHTML = '<div class="chart-box">' + svgGroupedBars(multiGroups, [
-      { name: '当日', color: UP }, { name: '5日', color: '#f0a35b' }, { name: '10日', color: ACC }
-    ], { unit: ' 亿', height: 300 }) + '</div>' + srcNote();
+    $('multiChart').innerHTML = anyValue(multiGroups) ?
+      ('<div class="chart-box">' + svgGroupedBars(multiGroups, [
+        { name: '当日', color: UP }, { name: '5日', color: '#f0a35b' }, { name: '10日', color: ACC }
+      ], { unit: ' 亿', height: 300 }) + '</div>' + srcNote()) : noDataBox;
 
     $('flowNotes').innerHTML = [
       ['不要孤立看单日', '单日大额净流入常是事件性脉冲；需看 5 日 / 10 日是否同向，才接近趋势性布局。'],
@@ -594,6 +638,69 @@
   }
 
   /* ---------------- 策略说明 Tab ---------------- */
+  /* ---------------- 数据源与容灾 ---------------- */
+  function sourceHealthHtml() {
+    var m = D.meta, sh = m.source_health || {};
+    var qMap = { full: '完整（主源）', partial: '部分（备用源）', minimal: '量价（备用源）',
+                 none: '失效', unknown: '未知' };
+    var qg = (sh.groups && sh.groups.quotes) || {};
+    var head = '<h2 style="margin-top:18px">数据源与容灾</h2>' +
+      '<div class="plan-box" style="margin-bottom:12px"><b>本期质量：' +
+      esc(qMap[m.quality] || m.quality || '未知') + '</b>　·　检查时点 ' +
+      esc(sh.checked_at || m.as_of) + '　·　失败尝试 ' + (sh.failed_count || 0) +
+      ' 次　·　资金口径 ' + esc(qg.fund_source || '--') +
+      (qg.fund_comparable === false ? '（与历史不可直接比较）' : '') + '</div>';
+    if (!sh.groups) {
+      return head + '<div class="plan-box">本页为历史 / 演示快照，无当期数据源健康记录。' +
+        '运行 <code>python src/run_daily.py --no-push</code> 后会生成。</div>';
+    }
+    var qn = { full: '完整', partial: '部分', minimal: '量价', none: '失效' };
+    var rows = Object.keys(sh.groups).map(function (k) {
+      var g = sh.groups[k] || {};
+      var count = g.count !== undefined ? g.count :
+                  (g.coverage || ((g.available || 0) + '/' + (g.attempted || 0)));
+      return '<tr style="text-align:left"><td><b>' + esc(k) + '</b></td><td>' +
+        esc(g.label || g.provider || '--') + '</td><td>' + esc(qn[g.quality] || '--') +
+        '</td><td>' + esc(String(count)) + '</td><td style="text-align:left;white-space:normal;min-width:200px">' +
+        esc(g.endpoint || g.fund_source || '--') + '</td></tr>';
+    }).join('');
+    var attempts = (sh.attempts || []).slice(0, 14).map(function (a) {
+      return '<tr style="text-align:left"><td>' + (a.ok ? '✅' : '❌') + '</td><td>' +
+        esc(a.group) + '</td><td>' + esc(a.label) + '</td><td>' + a.ms +
+        ' ms</td><td style="text-align:left;white-space:normal;min-width:220px">' +
+        esc(a.detail) + '</td></tr>';
+    }).join('');
+    var notes = (sh.notes || []).map(function (n) {
+      return '<div class="note-item">' + esc(n) + '</div>';
+    }).join('');
+    var chain = [
+      ['涨停 / 炸板 / 跌停池', '东财 push2ex（https + http 多域名）→ 同花顺涨停池（含封板质量，仅涨停池）→ 新浪全市场涨跌幅榜按涨跌停价重建'],
+      ['行情 + 主力资金', '东财 ulist.np（多域名）→ 东财 clist 榜单通道（同口径全字段）→ 腾讯证券 → 新浪榜单复用 / 逐票行情；资金仍缺时由新浪批量资金流补齐当日四类单'],
+      ['多周期 / 逐日资金', '东财 push2his 与 82.push2his 双域名；失败则多周期按中性 50 分计，不影响主流程'],
+      ['交叉校验', '主源为东财时额外比对同花顺涨停家数与成分重合度，偏差会在下方备注列出'],
+      ['全部失效', '优先回退最近一次真实快照并标记「陈旧」，再回退仓库内置演示样本；两种情况都不推送飞书，绝不编造行情']
+    ].map(function (n) {
+      return '<div class="note-item"><b>' + n[0] + '：</b>' + esc(n[1]) + '</div>';
+    }).join('');
+    return head +
+      '<div class="scroll-x"><table class="simple-table"><thead><tr><th>环节</th><th>实际来源</th>' +
+      '<th>质量</th><th>条数 / 覆盖</th><th>接口</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      (sh.cross_check && sh.cross_check.available ?
+        '<div class="plan-box" style="margin-top:10px"><b>交叉校验：</b>东财 ' +
+        sh.cross_check.primary_count + ' 家 / 同花顺 ' + sh.cross_check.ths_count +
+        ' 家，成分重合 ' + sh.cross_check.overlap_rate + '%。' +
+        esc(sh.cross_check.note || '') + '</div>' : '') +
+      (notes ? '<h3 style="margin-top:16px;font-size:14px">本期口径提示</h3><div class="notes">' + notes + '</div>' : '') +
+      '<h3 style="margin-top:16px;font-size:14px">容灾链与降级顺序</h3><div class="notes">' + chain + '</div>' +
+      (attempts ? '<h3 style="margin-top:16px;font-size:14px">本次取数尝试记录</h3>' +
+        '<div class="scroll-x"><table class="simple-table"><thead><tr><th>结果</th><th>环节</th>' +
+        '<th>数据源</th><th>耗时</th><th>摘要 / 错误</th></tr></thead><tbody>' + attempts +
+        '</tbody></table></div>' : '') +
+      '<div class="plan-box" style="margin-top:12px"><b>自助排查：</b>本地运行 ' +
+      '<code>python src/check_sources.py</code> 可逐项探测全部接口；GitHub Actions 页可手动运行「数据源健康自检」。' +
+      '各源开关在 <code>config.json → data_sources</code>。</div>';
+  }
+
   function renderAbout() {
     var labels = D.config.factor_labels, w = D.config.weights;
     var desc = {
@@ -628,8 +735,8 @@
         ['20cm / 30cm', '波动与回撤大于主板，额外扣 4 分']
       ].map(function (n) { return '<div class="note-item"><b>' + n[0] + '：</b>' + n[1] + '</div>'; }).join('') + '</div>' +
       '<h2 style="margin-top:18px">自动化链路</h2><div class="notes">' + [
-        ['每日运行', 'GitHub Actions 每交易日北京时间 15:30（收盘后）自动抓取、评分、生成快照并推送；节假日通过接口返回日期自动跳过推送。'],
-        ['飞书推送', '交互卡片含情绪概览、Top 候选、主力资金聚焦与按钮：打开看板 / 资金明细 / 策略说明 / 标记已阅。支持加签。'],
+        ['每日运行', 'GitHub Actions 每交易日北京时间 13:00（盘中快照）与 15:30（收盘定稿）各运行一次，自动多源采集、评分、生成快照并推送；节假日通过接口返回日期自动跳过推送。'],
+        ['飞书推送', '交互卡片含情绪概览、Top 候选、主力资金聚焦与按钮：打开看板 / 资金明细 / 数据源状态 / 策略说明 / 标记已阅。降级时卡片会标注口径，支持加签。'],
         ['交互看板', '本页由 GitHub Pages 托管，手机与电脑自适应；可筛选、排序、拖动因子权重实时重排、下钻个股资金与评分。'],
         ['复盘闭环', '每日快照提交进仓库，下一交易日自动计算观察池的次日涨跌、胜率与晋级率，用于检验参数稳健性。'],
         ['零第三方依赖', 'Python 后端只用标准库，前端只用原生 JS + SVG，Actions 无需 pip install，本地双击 HTML 也能看数据。'],
@@ -643,6 +750,7 @@
         ['⑤ 首次运行', 'Actions 页签 → 「每日涨停接力策略」→ Run workflow（mode 选 close）→ 检查飞书是否收到交互卡片、Pages 是否可访问。'],
         ['⑥ 本地预览', 'python src/run_daily.py --no-push 生成数据，再 python scripts/serve.py，浏览器打开 http://127.0.0.1:8000/；也可直接双击 index.html。']
       ].map(function (n) { return '<div class="note-item"><b>' + n[0] + '：</b>' + n[1] + '</div>'; }).join('') + '</div>' +
+      sourceHealthHtml() +
       '<h2 style="margin-top:18px">已知局限</h2><div class="plan-box">' +
       '① 数据源为公开行情接口，盘中为实时快照，尾盘炸板会导致结果变化，以收盘后定稿为准；' +
       '② 主力资金是按成交单笔金额推断的统计量，不是真实席位资金；' +

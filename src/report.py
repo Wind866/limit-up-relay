@@ -196,13 +196,23 @@ def build_report(snap: dict, cfg: dict, review: dict, history_days: list[dict],
             "source_time": snap.get("date"),
             "is_demo": bool(snap.get("is_demo")),
             "demo_note": snap.get("demo_note"),
+            "is_stale": bool(snap.get("is_stale")),
+            "stale_note": snap.get("stale_note"),
+            "quality": snap.get("quality", "unknown"),
+            "degraded": bool(snap.get("degraded")),
+            "source_health": snap.get("source_health") or {},
             "market_status": market_status,
             "strategy": cfg.get("strategy_name"),
             "version": cfg.get("version"),
             "generated_at": ds.now_cn().strftime("%Y-%m-%d %H:%M:%S %z"),
             "disclaimer": DISCLAIMER,
-            "data_caveat": "主力资金（大单+超大单）为按成交单笔金额推断的统计量，非交易所席位数据；"
-                           "盘中运行时为实时快照，收盘后运行为当日收盘数据。",
+            "data_caveat": (
+                "主力资金（大单+超大单）为按成交单笔金额推断的统计量，非交易所席位数据；"
+                "盘中运行时为实时快照，收盘后运行为当日收盘数据。"
+                + (" 本期已启用备用数据源，资金/封板字段口径可能与历史不同，跨日分数不可直接比较，"
+                   "详见「数据源与容灾」。" if snap.get("degraded") else "")
+                + (" 当前接口全部不可用，本页为历史快照，数据已过期。" if snap.get("is_stale") else "")
+            ),
         },
         "sentiment": sentiment,
         "sectors": sectors,

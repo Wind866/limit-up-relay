@@ -81,12 +81,27 @@ def main() -> int:
             log(f"采集 {target} 涨停池 / 炸板池 / 跌停池 / 资金流…")
             snap = ds.collect(day=target, flow_top=0)
         except ds.DataSourceError as exc:
-            log(f"行情接口不可用：{exc}")
-            if os.path.exists(demo_path):
+            log(f"行情接口全部不可用：{exc}")
+            # 优先用最近一次真实快照（比内置 demo 新），并强制标记为陈旧
+            stale = ds.load_recent_snapshot(
+                os.path.join(args.root, "data", "snapshots"), target.isoformat())
+            if stale:
+                snap = stale
+                args.no_push = True
+                log(f"降级到最近一次真实快照 {stale['date']}（已标记陈旧，不推送飞书）")
+            elif os.path.exists(demo_path):
                 snap = ds.load_demo(demo_path)
                 log(f"降级到历史真实快照样本 {snap['date']}（演示数据不推送）")
             else:
                 return 3
+
+        h = snap.get("source_health") or {}
+        if h:
+            qg = h.get("groups", {}).get("quotes", {})
+            log(f"数据源健康：质量 {h.get('quality')} / 失败尝试 {h.get('failed_count')} 次 / "
+                f"行情覆盖 {qg.get('coverage')} / 资金口径 {qg.get('fund_source')}")
+            for note in h.get("notes", [])[:4]:
+                log("  · " + note)
 
         qdate = snap.get("date")
         if qdate != target.isoformat() and not args.force:
@@ -105,7 +120,10 @@ def main() -> int:
                 except ds.DataSourceError:
                     pass
             got = sum(1 for v in snap["flow_history"].values() if v)
-            log(f"逐日资金流明细：{got}/{len(picked)} 只可用（多周期资金已由批量接口覆盖）")
+            qall = snap.get("quotes", {})
+            multi = sum(1 for v in qall.values() if v.get("main_net_5d") is not None)
+            log(f"逐日资金流明细：{got}/{len(picked)} 只可用；批量接口多周期资金覆盖 "
+                f"{multi}/{len(qall)} 只")
 
     # ---------- 2. 复盘 ----------
     snap_dir = os.path.join(args.root, "data", "snapshots")
