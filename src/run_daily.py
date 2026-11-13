@@ -46,6 +46,21 @@ def log(msg: str) -> None:
     print(f"[relay] {msg}", flush=True)
 
 
+LATE_GRACE_MINUTES = 20          # 超过这个延迟就要在日志与卡片上标注
+INTRADAY_EXPECT = "1300"         # 盘中快照的计划时刻（HHMM）
+INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：只更新看板，不推卡片
+
+
+def late_minutes(now: ds.dt.datetime, expect: str) -> int:
+    """返回比计划时刻晚多少分钟。expect 形如 '1530'，未提供或非法时返回 0。"""
+    expect = (expect or "").strip()
+    if len(expect) != 4 or not expect.isdigit():
+        return 0
+    planned = now.replace(hour=int(expect[:2]), minute=int(expect[2:]),
+                          second=0, microsecond=0)
+    return int((now - planned).total_seconds() // 60)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="涨停次日接力策略 · 每日运行")
     ap.add_argument("--date", help="目标日期 YYYY-MM-DD，默认今天（北京时间）")
@@ -62,6 +77,17 @@ def main() -> int:
     now = ds.now_cn()
     target = ds.dt.date.fromisoformat(args.date) if args.date else now.date()
     status = market_status(now)
+
+    # ---------- 0. 定时延迟守卫 ----------
+    # GitHub 的 schedule 只保证"尽力而为"，实测可能晚几小时才触发。
+    # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1530），其余触发为空。
+    expect = os.getenv("EXPECT_HHMM", "")
+    late = late_minutes(now, expect)
+    if late >= LATE_GRACE_MINUTES:
+        log(f"⚠️ 计划 {expect[:2]}:{expect[2:]} 运行，实际晚了 {late} 分钟（调度延迟）")
+    if expect == INTRADAY_EXPECT and late >= INTRADAY_MAX_LATE_MINUTES:
+        args.no_push = True
+        log(f"盘中快照迟到 {late} 分钟，数据已非盘中口径 → 跳过飞书推送，仅更新看板")
 
     if target.weekday() >= 5 and not args.force and not args.demo:
         log(f"{target} 为周末，非交易日，跳过（--force 可强制运行）")
@@ -141,7 +167,7 @@ def main() -> int:
     sectors = st.sector_strength(snap, snap.get("quotes", {}))
     cands = st.build_candidates(snap, cfg, sectors)
     days = report.history_index(hist_path, snap["date"], snap, sentiment, cands, review)
-    result = report.build_report(snap, cfg, review, days, status)
+    result = report.build_report(snap, cfg, review, days, status, late_minutes=late)
     files = report.write_outputs(result, snap, cfg, args.root)
     log("已生成：" + ", ".join(files))
 

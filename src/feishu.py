@@ -81,6 +81,11 @@ def build_card(report: dict, pages_url: str, repo_url: str = "") -> dict:
     if meta.get("market_status") == "盘中":
         lines.append("> 当前为盘中实时快照，收盘后 15:30 会再跑一次定稿")
 
+    late = int(meta.get("late_minutes") or 0)
+    if late >= 20:
+        lines.insert(0, f"> ⚠️ **延迟运行**：比计划时间晚 **{late} 分钟**（GitHub 定时调度延迟），"
+                        f"「{meta.get('market_status', '--')}」口径可能已与卡片标题不符，请以看板时间为准。")
+
     elements: list[dict] = [
         _md("\n".join(lines)),
         {"tag": "hr"},

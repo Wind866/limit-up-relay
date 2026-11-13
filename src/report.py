@@ -163,7 +163,7 @@ def cfg_top(candidates: list[dict]) -> int:
 
 
 def build_report(snap: dict, cfg: dict, review: dict, history_days: list[dict],
-                 market_status: str = "收盘后") -> dict:
+                 market_status: str = "收盘后", late_minutes: int = 0) -> dict:
     quotes = snap.get("quotes", {})
     sentiment = st.market_sentiment(snap)
     sectors = st.sector_strength(snap, quotes)
@@ -202,6 +202,7 @@ def build_report(snap: dict, cfg: dict, review: dict, history_days: list[dict],
             "degraded": bool(snap.get("degraded")),
             "source_health": snap.get("source_health") or {},
             "market_status": market_status,
+            "late_minutes": max(0, int(late_minutes or 0)),
             "strategy": cfg.get("strategy_name"),
             "version": cfg.get("version"),
             "generated_at": ds.now_cn().strftime("%Y-%m-%d %H:%M:%S %z"),
