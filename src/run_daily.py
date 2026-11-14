@@ -21,7 +21,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src import datasource as ds  # noqa: E402
-from src import feishu, report, strategy as st  # noqa: E402
+from src import feishu, push_guard, report, strategy as st  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -48,7 +48,7 @@ def log(msg: str) -> None:
 
 LATE_GRACE_MINUTES = 20          # 超过这个延迟就要在日志与卡片上标注
 INTRADAY_HOUR = "13"             # 盘中快照的计划小时（HH），必须与 daily.yml 的盘中 cron 一致
-INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：只更新看板，不推卡片
+INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：卡片标注时点，仍照常推送
 
 
 def late_minutes(now: ds.dt.datetime, expect: str) -> int:
@@ -62,7 +62,7 @@ def late_minutes(now: ds.dt.datetime, expect: str) -> int:
 
 
 def should_skip_intraday_push(expect: str, late: int, status: str) -> bool:
-    """盘中快照是否应放弃推送飞书。
+    """盘中快照是否属于「已非盘中口径」（只用于标注，不再拦截推送）。
 
     两种情形都算「数据已非盘中口径」：
       1) 迟到 ≥90 分钟；
@@ -98,10 +98,10 @@ def main() -> int:
     late = late_minutes(now, expect)
     if late >= LATE_GRACE_MINUTES:
         log(f"⚠️ 计划 {expect[:2]}:{expect[2:]} 运行，实际晚了 {late} 分钟（调度延迟）")
-    # 盘中快照：迟到太久或已经收盘，就不再推"盘中"卡片（看板照常更新）
+    # 迟到只标注、不拦截：准点由外部 Worker 触发，GitHub cron 延迟到达时
+    # 由 push_guard 读台账判重；外部定时器未部署时，迟到的一条也比完全没有强。
     if not args.demo and should_skip_intraday_push(expect, late, status):
-        args.no_push = True
-        log(f"盘中快照迟到 {late} 分钟（当前状态：{status}）→ 数据已非盘中口径，跳过飞书推送，仅更新看板")
+        log(f"盘中快照迟到 {late} 分钟（当前状态：{status}）→ 卡片会标注实际时点，仍照常推送")
 
     if target.weekday() >= 5 and not args.force and not args.demo:
         log(f"{target} 为周末，非交易日，跳过（--force 可强制运行）")
@@ -186,13 +186,21 @@ def main() -> int:
     log("已生成：" + ", ".join(files))
 
     # ---------- 4. 飞书推送 ----------
+    # 双档任务（13:07 / 15:37）共用一个 workflow，用 EXPECT_HHMM 作为 slot，
+    # 让台账按「日期-slot」判重，同一天的两个档互不干扰。
+    slot = expect if (len(expect) == 4 and expect.isdigit()) else None
+    force = os.getenv("FORCE_PUSH") == "1" or args.force
     if args.no_push:
         log("按参数跳过飞书推送")
         push_result = {"skipped": True, "reason": "--no-push"}
+    elif push_guard.should_skip("daily.yml", force=force, cutoff_hour=12, slot=slot):
+        log("⏭ 本档期已推送成功，跳过重复推送")
+        push_result = {"skipped": True, "reason": "push_guard"}
     else:
-        push_result = feishu.push(
-            result, force=os.getenv("FORCE_PUSH") == "1" or args.force
-        )
+        push_result = feishu.push(result, force=force)
+        # 只有飞书确实推送成功才写台账；降级/跳过/失败都不写
+        if not push_result.get("skipped") and push_result.get("ok") is True:
+            push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot=slot)
     log(f"飞书推送：{json.dumps(push_result, ensure_ascii=False)[:300]}")
 
     # ---------- 5. 终端摘要 ----------

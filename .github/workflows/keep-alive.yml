@@ -1,0 +1,45 @@
+name: Keep Alive
+
+# GitHub 会在「公开仓库连续 60 天无仓库活动」时自动禁用定时工作流，
+# 且重新激活必须修改 cron 值并提交，普通 commit 不够。这里每周留一次提交，
+# 保证 limit-up-relay 不会掉进「漏跑 → 无提交 → 被禁用 → 更不触发」的闭环。
+on:
+  schedule:
+    - cron: '0 17 * * 1'   # UTC 周一 17:00 = 北京周二 01:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: relay-keep-alive
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 记录心跳并裁剪日志
+        run: |
+          echo "Keep alive at $(date '+%Y-%m-%d %H:%M:%S %Z')" >> .github/keep-alive.log
+          tail -n 60 .github/keep-alive.log > .github/keep-alive.log.tmp
+          mv .github/keep-alive.log.tmp .github/keep-alive.log
+
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keep-alive.log
+          if git diff --staged --quiet; then
+            echo "无变更，跳过提交"
+          else
+            git commit -m "chore: keep alive $(date '+%Y-%m-%d')"
+            git pull --rebase origin main
+            git push
+          fi

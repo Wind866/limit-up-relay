@@ -3,10 +3,9 @@ name: 每日涨停接力策略
 # 北京时间 = UTC+8。每个交易日跑两次，两次都会推送飞书：
 #   13:07 盘中实时快照（UTC 05:07）→ 观察盘中封板与资金变化
 #   15:37 收盘定稿（UTC 07:37）→ 次日接力观察池正式版
-# 分钟数刻意避开 :00 / :30 —— 整点是 GitHub 调度器最拥堵的时刻，实测延迟更大。
-# GitHub Actions cron 使用 UTC，官方只保证"尽力而为"：延迟可达数小时，
-# 因此脚本内置延迟守卫（EXPECT_HHMM）：延迟 ≥20 分钟会在卡片标注，
-# 盘中快照延迟 ≥90 分钟则只更新看板、不推飞书。时间敏感场景建议改用外部定时器触发。
+# 分钟数刻意避开 :00 / :30 —— 整点是 GitHub 调度器最拥堵的时刻。
+# 准点由 Cloudflare Worker（见 BIGApush/cloudflare/README.md）workflow_dispatch；
+# 下面的 cron 只作兜底。两个档期靠 EXPECT_HHMM 区分，台账守卫按「日期-slot」判重。
 on:
   schedule:
     - cron: '7 5 * * 1-5'    # 周一至周五 13:07 北京时间（盘中快照）
@@ -28,7 +27,7 @@ on:
           - close
           - demo
       force:
-        description: 跳过交易日检查（节假日补跑时用）
+        description: '跳过交易日检查 / 本档期已推过也强制再推'
         required: false
         default: false
         type: boolean
@@ -42,6 +41,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: read
 
 concurrency:
   group: relay-daily
@@ -55,8 +55,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      # 站点未启用时提前失败并给出中文指引，避免白跑一遍采集与推送。
-      # 该 action 的自动启用参数需要额外 PAT，默认 GITHUB_TOKEN 权限不足。
+      # Pages 只是看板，不该阻断飞书推送：未启用时只告警，流程继续。
       - name: 检查 Pages 是否已启用
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,10 +66,8 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/pages") || code="000"
           if [ "$code" = "404" ]; then
-            echo "::error::GitHub Pages 未启用。请到仓库 Settings → Pages → Build and deployment → Source 选择「GitHub Actions」，然后重新运行本工作流。"
-            exit 1
-          fi
-          if [ "$code" = "200" ]; then
+            echo "::warning::GitHub Pages 未启用（不阻断飞书推送）。请到 Settings → Pages → Source 选择「GitHub Actions」。"
+          elif [ "$code" = "200" ]; then
             echo "Pages 已启用，继续部署"
           else
             echo "::warning::无法确认 Pages 状态（HTTP $code），继续尝试部署"
@@ -96,12 +93,10 @@ jobs:
           PAGES_URL: ${{ secrets.PAGES_URL }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
-      # 把 cron 对应的计划时刻写进环境变量，供脚本做延迟守卫。
-      # 注意：写进 $GITHUB_ENV 的值在本步骤内读不到（只对后续步骤生效），
-      # 所以这里用 shell 变量 planned 中转，不能直接 echo ${EXPECT_HHMM}。
-      # 若 schedule 触发但 cron 对不上（改了 on.schedule 忘了改这里），
-      # 直接 ::error:: 失败——否则守卫会静默失效，和之前踩过的坑一样。
-      - name: 推导计划时刻（延迟守卫）
+      # 把档期对应的计划时刻写进环境变量，供脚本做延迟标注与双档判重。
+      # schedule 触发时直接读 github.event.schedule；外部 Worker 用 workflow_dispatch
+      # 触发时该值为空，按当前北京时间取最接近的档期（13:07 / 15:37）。
+      - name: 推导计划时刻（档期 / 延迟标注）
         env:
           SCHEDULE: ${{ github.event.schedule }}
           EVENT: ${{ github.event_name }}
@@ -111,11 +106,14 @@ jobs:
             '37 7 * * 1-5') planned="1537" ;;
             '7 5 * * 1-5')  planned="1307" ;;
           esac
+          if [ -z "$planned" ] && [ "$EVENT" != "schedule" ]; then
+            planned=$(python -c "from datetime import datetime,timezone,timedelta; n=datetime.now(timezone(timedelta(hours=8))); c=n.hour*60+n.minute; print(min(('1307','1537'), key=lambda s: abs(c-int(s[:2])*60-int(s[2:]))))")
+          fi
           echo "EXPECT_HHMM=$planned" >> "$GITHUB_ENV"
           if [ -n "$planned" ]; then
-            echo "计划时刻：${planned:0:2}:${planned:2} —— 延迟守卫已启用"
+            echo "计划时刻：${planned:0:2}:${planned:2} —— 档期守卫已启用"
           elif [ "$EVENT" = "schedule" ]; then
-            echo "::error::cron「$SCHEDULE」在本步骤没有对应时刻，延迟守卫会失效。请同步 on.schedule 与这里的分支。"
+            echo "::error::cron「$SCHEDULE」在本步骤没有对应时刻，双档判重会失效。请同步 on.schedule 与这里的分支。"
             exit 1
           else
             echo "计划时刻：（$EVENT 触发，不做延迟判定）"
@@ -127,6 +125,8 @@ jobs:
           TZ: Asia/Shanghai
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_PUSH: ${{ inputs.force && '1' || '' }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           PYTHONIOENCODING: utf-8
         run: |
@@ -163,14 +163,15 @@ jobs:
         id: deploy
         uses: actions/deploy-pages@v4
 
-      # 之前本流程没有任何失败通知：采集全挂时只会静默降级，没人知道。
       - name: 失败告警
         if: failure()
         env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ -z "$FEISHU_WEBHOOK" ]; then echo "未配置 FEISHU_WEBHOOK，跳过失败告警"; exit 0; fi
-          curl -sS -X POST "$FEISHU_WEBHOOK" -H "Content-Type: application/json" \
+          HOOK="${ALERT_WEBHOOK:-$FEISHU_WEBHOOK}"
+          if [ -z "$HOOK" ]; then echo "未配置告警 webhook，跳过失败告警"; exit 0; fi
+          curl -sS -X POST "$HOOK" -H "Content-Type: application/json" \
             -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"⚠️ 涨停接力任务运行失败，请查看日志：$RUN_URL\"}}" \
             >/dev/null || true
