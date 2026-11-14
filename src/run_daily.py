@@ -46,6 +46,23 @@ def log(msg: str) -> None:
     print(f"[relay] {msg}", flush=True)
 
 
+# 业务级失败清单：数据源降级、飞书漏推等过去都 return 0，工作流判 success，
+# failure() 告警永远不会触发 —— 静默漏推。这里不中断主流程（看板仍要出），
+# 只把状态写进 GITHUB_OUTPUT，由 workflow 末尾的「业务健康检查」步骤判失败并告警。
+BUSINESS_ISSUES: list[str] = []
+
+
+def flag_business_failure(reason: str) -> None:
+    """记录一次业务级失败。本地运行时 GITHUB_OUTPUT 不存在，自动降级为纯日志。"""
+    BUSINESS_ISSUES.append(reason)
+    print(f"::error::[业务级失败] {reason}", flush=True)
+    out = os.getenv("GITHUB_OUTPUT", "")
+    if out and len(BUSINESS_ISSUES) == 1:
+        with open(out, "a", encoding="utf-8") as fh:
+            fh.write("business_ok=false\n")
+            fh.write(f"business_issue={reason}\n")
+
+
 LATE_GRACE_MINUTES = 20          # 超过这个延迟就要在日志与卡片上标注
 INTRADAY_HOUR = "13"             # 盘中快照的计划小时（HH），必须与 daily.yml 的盘中 cron 一致
 INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：卡片标注时点，仍照常推送
@@ -128,9 +145,13 @@ def main() -> int:
             if stale:
                 snap = stale
                 args.no_push = True
+                flag_business_failure(
+                    f"行情接口全部不可用，已降级到 {stale['date']} 陈旧快照，当日未推送")
                 log(f"降级到最近一次真实快照 {stale['date']}（已标记陈旧，不推送飞书）")
             elif os.path.exists(demo_path):
                 snap = ds.load_demo(demo_path)
+                args.no_push = True
+                flag_business_failure("行情接口全部不可用，已降级到演示样本，当日未推送")
                 log(f"降级到历史真实快照样本 {snap['date']}（演示数据不推送）")
             else:
                 return 3
@@ -200,7 +221,13 @@ def main() -> int:
         push_result = feishu.push(result, force=force)
         # 只有飞书确实推送成功才写台账；降级/跳过/失败都不写
         if not push_result.get("skipped") and push_result.get("ok") is True:
-            push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot=slot)
+            if not push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot=slot):
+                log("⚠️ 台账写入失败：本档期可能被后续延迟的 cron 重复推送")
+        elif push_result.get("skipped") and "未配置" in str(push_result.get("reason", "")):
+            flag_business_failure(str(push_result.get("reason")))
+        elif not push_result.get("skipped") and push_result.get("ok") is not True:
+            detail = push_result.get("error") or push_result.get("response") or "未知原因"
+            flag_business_failure(f"飞书推送失败：{str(detail)[:150]}")
     log(f"飞书推送：{json.dumps(push_result, ensure_ascii=False)[:300]}")
 
     # ---------- 5. 终端摘要 ----------
@@ -211,6 +238,10 @@ def main() -> int:
     for c in cands[:5]:
         log(f"  {c['rank']:>2}. {c['name']}({c['code']}) {c['score']}分 {c['grade']} "
             f"{c['boards']}板 {c['industry']} 主力{c['main_net_yi']}亿")
+    if BUSINESS_ISSUES:
+        log(f"业务健康检查：失败 {len(BUSINESS_ISSUES)} 项 → " + "；".join(BUSINESS_ISSUES))
+    else:
+        log("业务健康检查：通过")
     return 0
 
 
