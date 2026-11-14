@@ -52,6 +52,8 @@
     "ths": true,
     "tencent": true,
     "sina": true,
+    "flow_backfill": true,
+    "flow_backfill_max": 60,
     "sina_flow_backfill": true,
     "cross_check": true,
     "timeout_seconds": 8,

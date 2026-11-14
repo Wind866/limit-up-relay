@@ -65,7 +65,9 @@ def compute_review(snap: dict, cfg: dict, snapshot_dir: str) -> dict:
 
     secids = [p["secid"] for p in picks if p.get("secid")]
     try:
-        quotes = ds.fetch_quotes(secids, with_flow=False)
+        # 传入 cfg：让 --config 指定的文件与 data_sources 开关在这里同样生效
+        # （旧写法走 load_config() 读默认 config.json，两者会不一致）
+        quotes = ds.fetch_quotes(secids, with_flow=False, cfg=cfg)
     except ds.DataSourceError as exc:
         return {"available": False, "reason": f"次日行情获取失败：{exc}", "next_day": today}
 
@@ -115,9 +117,19 @@ def compute_review(snap: dict, cfg: dict, snapshot_dir: str) -> dict:
     hour = ds.now_cn().hour + ds.now_cn().minute / 60
     intraday = ds.now_cn().date().isoformat() == today and hour < 15.05
 
+    # 上一份快照若是 13:07 的盘中口径（当天收盘那次没跑成功），复盘基准就不是定稿，
+    # 这个偏差必须显式写出来，否则会被当成「策略在收盘价上的真实表现」。
+    prev_kind = prev.get("snapshot_kind")
+    caveat = ("模拟跟踪口径：按前收盘价计算次日涨跌幅，未考虑一字板无法成交、"
+              "高开滑点、佣金与印花税，不等于可实现收益。")
+    if prev_kind == "intraday":
+        caveat += (f" 注意：对比基准快照 {prev_date} 是**盘中口径**（当天收盘那次未成功），"
+                   "当时尚未定稿，次日涨跌基准可能存在偏差。")
+
     return {
         "available": True,
         "source_snapshot": prev_date,
+        "source_snapshot_kind": prev_kind or "unknown",
         "next_day": today,
         "as_of": snap.get("as_of"),
         "is_intraday": intraday,
@@ -125,9 +137,8 @@ def compute_review(snap: dict, cfg: dict, snapshot_dir: str) -> dict:
         "by_grade": by_grade,
         "by_board": by_board,
         "rows": rows,
-        "source": "东方财富实时行情（ulist.np），对照本仓库上一交易日观察池快照",
-        "caveat": "模拟跟踪口径：按前收盘价计算次日涨跌幅，未考虑一字板无法成交、"
-                  "高开滑点、佣金与印花税，不等于可实现收益。",
+        "source": "公开实时行情（多源容灾，实际来源见上表），对照本仓库上一交易日观察池快照",
+        "caveat": caveat,
     }
 
 

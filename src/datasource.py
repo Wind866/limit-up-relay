@@ -31,6 +31,8 @@ now_cn = src.now_cn
 date_compact = src.date_compact
 date_iso = src.date_iso
 CN_TZ = src.CN_TZ
+# 独立于池数据源的「真实交易日」信号，供节假日守卫兜底
+market_trading_date = src.trading_date_from_tencent
 
 FLOW_FIELDS = src.FLOW_FIELDS
 QUOTE_FIELDS = src.QUOTE_FIELDS
@@ -168,8 +170,13 @@ def collect(day: dt.date | None = None, flow_top: int = 0,
     for kind in ("ZT", "ZB", "DT"):
         _enrich_pool(pools[kind]["items"], quotes)
 
-    histories: dict[str, list[dict]] = {}
+    # 逐日资金明细：优先复用「东财资金流日线回补」过程中已经取到的日线，
+    # 避免对同一只票再发一次请求（限流窗口里每省一次请求都很值）。
+    histories: dict[str, list[dict]] = dict(qmeta.get("flow_details") or {})
+    prefetched = set(histories)
     for item in zt["items"][:flow_top]:
+        if item["code"] in prefetched:
+            continue
         rows = src.fetch_flow_history(item["secid"], cfg)
         if rows:
             histories[item["code"]] = rows
@@ -201,6 +208,7 @@ def collect(day: dt.date | None = None, flow_top: int = 0,
         "fund_source": qmeta.get("fund_source", "none"),
         "fund_comparable": qmeta.get("fund_comparable", False),
         "fund_backfilled": qmeta.get("fund_backfilled", 0),
+        "failed_batches": qmeta.get("failed_batches", 0),
     }
     groups["flow_history"] = {
         "available": len(histories), "attempted": min(flow_top, len(zt["items"])),

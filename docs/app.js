@@ -60,7 +60,10 @@
     var zeroX = padL + (0 - min) / span * inner;
     var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="横向条形图">';
     items.forEach(function (it, idx) {
-      var v = Number(it.value) || 0;
+      // 空值不画柱子：否则资金缺数据时会画出一条 0 长度的「净额为 0」假象
+      var raw = it.value;
+      var has = raw !== null && raw !== undefined && raw !== '' && !isNaN(Number(raw));
+      var v = has ? Number(raw) : 0;
       var y = padT + idx * rowH + 3, h = rowH - 9;
       var x2 = padL + (v - min) / span * inner;
       var x = Math.min(zeroX, x2), w = Math.max(2, Math.abs(x2 - zeroX));
@@ -69,11 +72,13 @@
            'style="fill:' + TXT2 + ';font-size:11.5px">' + esc(it.label) + '</text>';
       s += '<rect x="' + padL + '" y="' + y + '" width="' + inner + '" height="' + h + '" rx="3" ' +
            'style="fill:' + SURF3 + ';opacity:.55" />';
-      s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="3" ' +
-           'style="fill:' + color + '" data-tip="' + esc(it.tip || (it.label + '：' + v)) + '" />';
+      if (has) {
+        s += '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="3" ' +
+             'style="fill:' + color + '" data-tip="' + esc(it.tip || (it.label + '：' + v)) + '" />';
+      }
       s += '<text x="' + (W - 4) + '" y="' + (y + h / 2 + 4) + '" text-anchor="end" ' +
-           'style="fill:' + (v >= 0 ? UP : DOWN) + ';font-size:11px;font-weight:600">' +
-           esc(it.text || num(v, 2)) + '</text>';
+           'style="fill:' + (has ? (v >= 0 ? UP : DOWN) : TXT3) + ';font-size:11px;font-weight:600">' +
+           esc(has ? (it.text || num(v, 2)) : '--') + '</text>';
     });
     return s + '</svg>';
   }

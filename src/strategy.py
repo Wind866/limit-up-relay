@@ -161,7 +161,12 @@ def _eligible(stock: dict, cfg: dict) -> tuple[bool, str]:
         return False, "ST/退市整理期，风险剔除"
     if uni.get("exclude_bj", True) and code.startswith(("4", "8", "92")):
         return False, "北交所/三板，涨跌幅机制不同"
-    if (stock.get("amount") or 0) < uni.get("min_amount_yuan", 0):
+    # 成交额缺失（备用源不给）**不等于不达标**：旧写法用 `or 0` 兜底，
+    # 降级到新浪 / 同花顺的当天会把成交额字段全成 None 的标的整批剔除，
+    # 观察池直接清空。缺失走中性 50 分，只有明确低于门槛才剔除。
+    min_amount = uni.get("min_amount_yuan", 0) or 0
+    amount = stock.get("amount")
+    if amount is not None and amount < min_amount:
         return False, "成交额不足，流动性剔除"
     return True, ""
 

@@ -60,8 +60,12 @@ def _probes(day):
          lambda: f"{len(s.sina_fetch_quotes(codes))} 只"),
         ("flow", "eastmoney", "东财逐日资金流（多周期）", "push2his · fflow/daykline",
          lambda: f"{len(s.em_fetch_flow_history('0.002148', 5))} 个交易日"),
+        ("flow", "eastmoney_fflow", "东财资金流日线逐票回补（同口径）", "push2his · fflow + 并发",
+         lambda: f"{len(s.em_fetch_flow_quotes(secids, limit=11))} 只"),
         ("flow", "sina", "新浪批量资金流（口径不同）", "MoneyFlow.ssi_ssfx_flzjtj",
          lambda: f"{len(s.sina_fetch_flow(codes, batch=10))} 只"),
+        ("meta", "tencent", "交易日校验（指数行情时间戳）", "qt.gtimg.cn · sh000001",
+         lambda: f"最新交易日 {s.trading_date_from_tencent()}"),
     ]
 
 
@@ -82,8 +86,10 @@ def run(day) -> dict:
         })
     ok_count = sum(1 for r in results if r["ok"])
     by_group: dict[str, dict] = {}
-    for g in ("pool", "quotes", "flow"):
+    for g in ("pool", "quotes", "flow", "meta"):
         rows = [r for r in results if r["group"] == g]
+        if not rows:
+            continue
         by_group[g] = {
             "ok": sum(1 for r in rows if r["ok"]), "total": len(rows),
             "healthy": any(r["ok"] for r in rows),
@@ -108,8 +114,11 @@ def text_report(d: dict) -> str:
         lines.append(f"{flag:<6}{r['label']:<30}{r['endpoint'][:33]:<34}"
                      f"{str(r['ms']) + 'ms':>7}  {r['detail'][:46]}")
     lines.append("-" * 78)
-    for g, cn in (("pool", "池数据"), ("quotes", "行情数据"), ("flow", "资金数据")):
-        v = d["groups"][g]
+    for g, cn in (("pool", "池数据"), ("quotes", "行情数据"),
+                  ("flow", "资金数据"), ("meta", "交易日校验")):
+        v = d["groups"].get(g)
+        if not v:
+            continue
         lines.append(f"  {cn}: {v['ok']}/{v['total']} 可用 → "
                      + ("正常" if v["healthy"] else "该层全部失效"))
     lines.append(f"合计 {d['ok']}/{d['total']} 个接口可用；"
@@ -139,10 +148,16 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--markdown", action="store_true", help="输出 Markdown（GitHub Summary）")
     ap.add_argument("--out", help="把 JSON 结果写入指定文件")
-    ap.add_argument("--date", help="目标日期 YYYY-MM-DD，默认今天（北京时间）")
+    ap.add_argument("--date", help="目标日期 YYYY-MM-DD，默认最近交易日（北京时间）")
     args = ap.parse_args()
 
-    day = s.dt.date.fromisoformat(args.date) if args.date else s.now_cn().date()
+    if args.date:
+        day = s.dt.date.fromisoformat(args.date)
+    else:
+        # 非交易日（周末 / 节假日）不能用「今天」探测：同花顺等接口按当天查会返回空池，
+        # 自检就会把正常接口误判成 FAIL。改用指数行情时间戳给出的最近交易日。
+        real = s.trading_date_from_tencent()
+        day = s.dt.date.fromisoformat(real) if real else s.now_cn().date()
     try:
         result = run(day)
     except Exception:  # noqa: BLE001

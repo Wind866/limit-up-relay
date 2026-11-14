@@ -5,6 +5,10 @@ venv/
 .env
 .DS_Store
 *.log
+# keep-alive 的心跳日志必须入库，否则 keep-alive.yml 的 git add 会被这条 *.log 挡住
+# （报 "paths are ignored by one of your .gitignore files" 并失败），
+# 60 天无活动后 GitHub 会自动禁用定时任务 —— 安全网自己先挂了。
+!.github/keep-alive.log
 preview-*.png
 probe-dom.txt
 probe2-dom.txt

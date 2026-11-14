@@ -107,6 +107,10 @@ def main() -> int:
     now = ds.now_cn()
     target = ds.dt.date.fromisoformat(args.date) if args.date else now.date()
     status = market_status(now)
+    if target != now.date():
+        # 用 --date 回看历史日期时，那次交易早已收盘；按「当前时刻」判成「休市」
+        # 会让卡片和快照口径标签失真（还会把 snapshot_kind 误标成盘中）。
+        status = "收盘后"
 
     # ---------- 0. 定时延迟守卫 ----------
     # GitHub 的 schedule 只保证"尽力而为"，实测可能晚几小时才触发。
@@ -170,23 +174,41 @@ def main() -> int:
                 "仅生成本地数据，不推送飞书")
             args.no_push = True
 
+        # 独立校验：上面那条完全依赖池数据源自报的 qdate。池子降级到新浪榜单时，
+        # 榜单不含日期字段，标注出来的日期可能是「请求日期」而不是「数据日期」。
+        # 这里用上证指数行情时间戳做一次与数据源无关的交叉验证。
+        real_day = ds.market_trading_date()
+        if real_day and qdate != real_day and not args.force:
+            log(f"独立校验：指数行情显示最新交易日为 {real_day}，池数据自报 {qdate} → "
+                "判定数据非当日，不推送飞书")
+            args.no_push = True
+
         # 可选增强：对最高分候选尝试补抓逐日资金流（该接口偶发限流，失败不影响主流程）
         if snap.get("limit_up"):
             prelim = st.build_candidates(snap, cfg)
             picked = [(c["code"], c["secid"]) for c in prelim[:cfg.get("flow_detail_top", 6)]]
-            snap["flow_history"] = {}
+            # collect() 过程中「资金流日线回补」可能已经拿到了日线，不要清空重抓
+            snap.setdefault("flow_history", {})
             for code, secid in picked:
+                if snap["flow_history"].get(code):
+                    continue
                 try:
-                    snap["flow_history"][code] = ds.fetch_flow_history(secid, retries=1)
+                    rows = ds.fetch_flow_history(secid, retries=1)
                 except ds.DataSourceError:
-                    pass
+                    continue
+                # 只存真正取到的明细：空列表会让快照多出一堆无意义的键
+                if rows:
+                    snap["flow_history"][code] = rows
             got = sum(1 for v in snap["flow_history"].values() if v)
             qall = snap.get("quotes", {})
             multi = sum(1 for v in qall.values() if v.get("main_net_5d") is not None)
-            log(f"逐日资金流明细：{got}/{len(picked)} 只可用；批量接口多周期资金覆盖 "
+            log(f"逐日资金流明细：{got} 只可用；批量接口多周期资金覆盖 "
                 f"{multi}/{len(qall)} 只")
 
     # ---------- 2. 复盘 ----------
+    # 标记快照口径：15:37 之后才算定稿。若某天收盘那次失败、只留下 13:07 的盘中快照，
+    # 次日复盘的基准就是盘中数据，必须在复盘口径里说清楚，而不是当成收盘定稿。
+    snap["snapshot_kind"] = "close" if (args.demo or status == "收盘后") else "intraday"
     snap_dir = os.path.join(args.root, "data", "snapshots")
     if snap.get("is_demo"):
         review = {"available": False, "reason": "演示模式不做复盘", "next_day": snap.get("date")}

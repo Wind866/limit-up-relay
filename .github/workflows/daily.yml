@@ -56,10 +56,13 @@ jobs:
     timeout-minutes: 15
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      # 未启用 Pages 时 deploy 步骤会被跳过，此处回落到推导地址，避免空 url 报错
+      url: ${{ steps.deploy.outputs.page_url || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
     steps:
-      # Pages 只是看板，不该阻断飞书推送：未启用时只告警，流程继续。
+      # Pages 只是看板，不该阻断飞书推送：未启用时跳过部署，流程继续。
+      # 之前这里只打 warning，后面的 configure-pages 仍然会失败，等于没做到「非阻断」。
       - name: 检查 Pages 是否已启用
+        id: pages
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -68,11 +71,15 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$REPO/pages") || code="000"
-          if [ "$code" = "404" ]; then
-            echo "::warning::GitHub Pages 未启用（不阻断飞书推送）。请到 Settings → Pages → Source 选择「GitHub Actions」。"
-          elif [ "$code" = "200" ]; then
+          if [ "$code" = "200" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "Pages 已启用，继续部署"
+          elif [ "$code" = "404" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GitHub Pages 未启用，本次跳过部署（不阻断飞书推送）。请到 Settings → Pages → Source 选择「GitHub Actions」。"
           else
+            # 无法确认时按「已启用」处理：让 configure-pages 自己报错，避免误判成未启用而长期不部署
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "::warning::无法确认 Pages 状态（HTTP $code），继续尝试部署"
           fi
 
@@ -140,6 +147,9 @@ jobs:
           if [ "${{ inputs.push }}" = "false" ]; then ARGS="$ARGS --no-push"; fi
           python src/run_daily.py $ARGS
 
+      # 台账（.push-state）与数据快照必须在**同一次**提交里推上去：
+      # 旧版用 Contents API 单独提交台账，会抢先把远端 HEAD 推到前面，
+      # 导致紧接着的 git push 变成 non-fast-forward 被拒，进而 Pages 部署被 skip。
       - name: 提交每日快照
         if: github.event_name != 'push'   # 防止「提交→触发→再提交」死循环
         env:
@@ -147,24 +157,40 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data data/snapshots
+          git add docs/data data/snapshots .push-state
           if git diff --staged --quiet; then
             echo "数据无变化，跳过提交"
-          else
-            git commit -m "chore(data): 每日策略快照 $(date +'%F %H:%M')"
-            git push
+            exit 0
           fi
+          git commit -m "chore(data): 每日策略快照 $(date +'%F %H:%M')"
+          # 外部提交（keep-alive / 人工 / dependabot）可能已推进远端，先 rebase 再推。
+          # 生成类文件冲突不常见（同一时间只有一次 daily 运行），真冲突时如实失败并告警。
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          for i in 1 2 3; do
+            if git push origin "HEAD:$BRANCH"; then
+              echo "已推送（第 $i 次尝试）"
+              exit 0
+            fi
+            echo "::warning::推送失败（第 $i 次），尝试 rebase 后重试"
+            git pull --rebase --autostash origin "$BRANCH" || { git rebase --abort 2>/dev/null || true; }
+            sleep $((i * 2))
+          done
+          echo "::error::连续 3 次推送失败，数据与台账未入库"
+          exit 1
 
       - name: 配置 GitHub Pages
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
       - name: 上传 Pages 产物
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: docs
 
       - name: 部署 Pages
         id: deploy
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
       # 业务级失败（数据源降级、飞书漏推）过去被 return 0 吞掉，工作流显示 success，
@@ -186,18 +212,17 @@ jobs:
           fi
           echo "业务健康检查通过"
 
+      # 告警必须支持加签：飞书机器人开启「加签」后，未带 sign 的消息会被直接拒（19021），
+      # 原来裸 curl 发文本等于告警永久哑掉。这里改用 scripts/alert.py 复用签名逻辑。
       - name: 失败告警
         if: failure()
         env:
           ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+          ALERT_SECRET: ${{ secrets.ALERT_SECRET }}
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PYTHONIOENCODING: utf-8
         run: |
-          if [ -z "$ALERT_WEBHOOK" ]; then
-            echo "::error::未配置独立告警 Secret ALERT_WEBHOOK；本次告警退回业务 webhook，业务 webhook 故障时告警会一并失效"
-          fi
-          HOOK="${ALERT_WEBHOOK:-$FEISHU_WEBHOOK}"
-          if [ -z "$HOOK" ]; then echo "::error::未配置告警 webhook，跳过失败告警"; exit 0; fi
-          curl -sS -X POST "$HOOK" -H "Content-Type: application/json" \
-            -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"⚠️ 涨停接力任务运行失败，请查看日志：$RUN_URL\"}}" \
-            >/dev/null || echo "::error::告警发送失败（独立告警通道可能也失效）"
+          python scripts/alert.py "⚠️ 涨停接力任务运行失败，请查看日志" --run-url "$RUN_URL" \
+            || echo "::error::告警发送失败（独立告警通道可能也失效）"

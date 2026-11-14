@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -26,20 +27,47 @@ def gen_sign(secret: str, timestamp: str) -> str:
     return base64.b64encode(hmac_code).decode("utf-8")
 
 
-def send(webhook: str, secret: str, card: dict, timeout: int = 12) -> dict:
-    payload: dict[str, Any] = {"msg_type": "interactive", "card": card}
+def _post(url: str, payload: dict, timeout: int, attempts: int = 2) -> dict:
+    """POST 一次 JSON。网络类异常重试一次（飞书偶发 502/连接重置），
+    业务错误（HTTP 200 但 body 里 code != 0）不重试 —— 重发也一样错。"""
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    last: Exception | None = None
+    for i in range(max(1, attempts)):
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # 4xx 是请求本身有问题，重试无意义；429 与 5xx 值得再试一次
+            if exc.code < 500 and exc.code != 429:
+                raise
+            last = exc
+        except Exception as exc:  # noqa: BLE001 - 网络抖动
+            last = exc
+        if i + 1 < attempts:
+            time.sleep(1.5)
+    raise last if last else RuntimeError("发送失败")
+
+
+def _sign(secret: str, payload: dict) -> dict:
     if secret:
         ts = str(int(time.time()))
         payload["timestamp"] = ts
         payload["sign"] = gen_sign(secret, ts)
-    req = urllib.request.Request(
-        webhook,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    return payload
+
+
+def send(webhook: str, secret: str, card: dict, timeout: int = 12) -> dict:
+    return _post(webhook, _sign(secret, {"msg_type": "interactive", "card": card}), timeout)
+
+
+def send_text(webhook: str, secret: str, text: str, timeout: int = 12) -> dict:
+    """纯文本消息，用于失败告警。同样走加签，避免机器人开启加签后告警被拒。"""
+    return _post(webhook, _sign(secret, {"msg_type": "text", "content": {"text": text}}), timeout)
 
 
 def _md(text: str) -> dict:

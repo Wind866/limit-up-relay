@@ -35,7 +35,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/keep-alive.log
+          # -f：即使 .gitignore 规则被改回 *.log 也能提交，心跳不能因为一条忽略规则而失效
+          git add -f .github/keep-alive.log
           if git diff --staged --quiet; then
             echo "无变更，跳过提交"
           else

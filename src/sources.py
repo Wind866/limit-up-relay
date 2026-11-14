@@ -47,6 +47,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable
+from concurrent import futures
 
 CN_TZ = dt.timezone(dt.timedelta(hours=8))
 
@@ -112,9 +113,15 @@ PROVIDER_LABELS = {
     "sina": "新浪财经",
     "tencent": "腾讯证券",
     "eastmoney_clist": "东方财富(榜单通道)",
+    "eastmoney_fflow": "东方财富(资金流日线)",
     "sina_flow": "新浪资金流(口径不同)",
     "cache": "本次运行缓存",
 }
+
+# 哪些资金来路与东方财富「大单+超大单」口径等价，可跨日比较。
+# eastmoney      = ulist.np / clist 当日快照
+# eastmoney_fflow = push2his 资金流日线逐票回补（同一套 fflow 口径，含多周期）
+FUND_COMPARABLE_SOURCES = ("eastmoney", "eastmoney_fflow")
 
 # 新浪榜单在同一次 collect 内复用，避免重建三种池时重复分页请求
 _SINA_RANK_CACHE: dict[tuple[str, bool], tuple[float, list[dict]]] = {}
@@ -218,14 +225,19 @@ def _at(parts: list[str], idx: int) -> float | None:
 
 
 def limit_pct(code: str, name: str) -> float:
-    """A 股涨跌停幅度（用于从全市场行情重建池）。"""
-    upper = (name or "").upper()
-    if "ST" in upper:
-        return 5.0
+    """A 股涨跌停幅度（用于从全市场行情重建池）。
+
+    顺序很关键：**先判板块再看 ST**。创业板 / 科创板的 ST 股涨跌幅仍是 20%，
+    旧写法先匹配 "ST" 会把它当 5% 处理，涨停价算错一半，导致该股既没进涨停池、
+    也可能被误判成炸板。北交所 30%。
+    """
+    upper = (name or "").upper().replace(" ", "")
     if code.startswith(("30", "68")):
         return 20.0
     if code.startswith(("8", "4", "92")):
         return 30.0
+    if "ST" in upper:
+        return 5.0
     return 10.0
 
 
@@ -241,6 +253,43 @@ def _tx_symbol(code: str) -> str:
     if code.startswith(("8", "4", "92")):
         return "bj" + code
     return ("sh" if _market_of(code) == 1 else "sz") + code
+
+
+# 真实交易日缓存：{(日期, 抓取时刻), iso}
+_TRADING_DATE_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def trading_date_from_tencent(timeout: float = 8.0) -> str | None:
+    """用上证指数行情时间戳取「数据实际所属的交易日」。
+
+    为什么需要独立信号：节假日守卫原来只看东财涨停池返回的 ``qdate``。
+    一旦东财与同花顺同时不可用、池子由新浪榜单重建，而新浪榜单**不含日期**，
+    代码会用「请求的日期」充当 qdate —— 节假日里就会把上一交易日的数据
+    标成今天，于是跳过逻辑失效、推出一张日期错误的卡片。
+
+    腾讯指数行情第 31 个字段是 ``YYYYMMDDHHMMSS``，与任何池数据源都无关，
+    适合做这个独立的兜底校验。取不到时返回 None，调用方保持原有行为。
+    """
+    now = time.time()
+    cached = _TRADING_DATE_CACHE.get("v")
+    if cached and now - cached[0] < 300:
+        return cached[1]
+    try:
+        text = http_text(TENCENT_HQ + "sh000001", referer=TENCENT_REFERER,
+                         encoding="gbk", timeout=timeout, retries=1)
+    except Exception:  # noqa: BLE001 - 只是兜底信号，取不到不影响主流程
+        return None
+    for seg in text.split(";"):
+        if "=" not in seg:
+            continue
+        p = seg.split("=", 1)[1].strip().strip('";').split("~")
+        if len(p) > 30:
+            m = re.match(r"(\d{8})", str(p[30] or ""))
+            if m:
+                iso = compact_to_iso(m.group(1))
+                _TRADING_DATE_CACHE["v"] = (now, iso)
+                return iso
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -575,12 +624,173 @@ def em_fetch_flow_history(secid_: str, limit: int = 15) -> list[dict]:
                     "date": p[0], "main_net": num(p[1]), "small_net": num(p[2]),
                     "mid_net": num(p[3]), "big_net": num(p[4]),
                     "super_net": num(p[5]), "main_pct": num(p[6]),
+                    "small_pct": num(p[7]), "mid_pct": num(p[8]),
+                    "big_pct": num(p[9]), "super_pct": num(p[10]),
                     "close": num(p[11]), "pct": num(p[12]),
                 })
             return rows[-limit:]
         except Exception as exc:  # noqa: BLE001
             last = exc
     raise SourceFailure(f"东财逐日资金流多域名均失败: {type(last).__name__}")
+
+
+# 东财「资金流日线」与 ulist.np 的 f62/f66/f72/f78/f84 属同一套资金流口径，
+# 只是前者按交易日列、后者只给当日快照。因此可用日线还原当日与多周期字段。
+FFLOW_LIMIT = 15
+FFLOW_MAX_WORKERS = 3      # 必须温和：并发过高会把 push2his 打成限流（详见下方说明）
+FFLOW_MAX_STOCKS = 60
+
+# 最近交易日列表缓存：多周期资金窗口必须按「交易日」而不是「有数据的日子」对齐
+_TRADING_DAYS_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def market_trading_days(limit: int = 20) -> list[str]:
+    """最近 N 个交易日（取上证指数日线的日期列），用于对齐 5/10 日资金窗口。
+
+    为什么需要：东财 f164 / f174 是「最近 5 / 10 个**交易日**」的累计。
+    个股停牌那天没有日线记录，但它对累计值的贡献是 0。若按「最近 10 根有数据的
+    日线」求和，停牌股会多算一根更早的日线 —— 实测 300237 因此偏了 716 万元。
+    取不到日历时返回空列表，调用方退化为按行数求和（宁可口径略偏，也不阻断）。
+    """
+    cached = _TRADING_DAYS_CACHE.get("v")
+    if cached and time.time() - cached[0] < 300:
+        return cached[1]
+    url = (f"{EM_HISTORY_HOSTS[0]}/api/qt/stock/kline/get?secid=1.000001&klt=101&fqt=1"
+           f"&lmt={limit + 5}&end=20500101&fields1=f1&fields2=f51")
+    try:
+        data = http_json(url, referer=EM_REFERER, timeout=8, retries=1)
+        klines = ((data.get("data") or {}).get("klines") or [])
+        days = [str(k).split(",")[0] for k in klines if str(k).strip()]
+        if not days:
+            return []
+        days = days[-limit:]
+        _TRADING_DAYS_CACHE["v"] = (time.time(), days)
+        return days
+    except Exception:  # noqa: BLE001 - 只是对齐用的辅助数据
+        return []
+
+
+def fflow_quote_fields(rows: list[dict], trading_days: list[str] | None = None) -> dict:
+    """把逐日资金流日线折算成与 ``ulist.np`` 等价口径的当日 / 5 日 / 10 日资金字段。
+
+    口径说明（重要）：
+    * 当日 main/super/big/mid/small 净额与净占比，取自最后一根日线 —— 与
+      f62/f66/f72/f78/f84、f184/f69/... 定义一致，故 ``fund_comparable=True``；
+    * 5 日 / 10 日主力净额按「最近 N 个交易日」窗口求和，等价于 f164 / f174；
+      停牌日没有记录、贡献为 0，所以按窗口内已有行求和才是对的
+      （``trading_days`` 为空时退化为按最近 N 根日线求和）；
+    * 5 日 / 10 日「净占比」（f165 / f175）的分母是同期成交额，日线接口不返回
+      成交额，因此**一律留 None，不用均值或猜测值冒充**。
+    """
+    if not rows:
+        raise SourceFailure("资金流日线为空")
+    last = rows[-1]
+
+    def window_sum(n: int, key: str) -> float | None:
+        if trading_days:
+            if len(trading_days) < n:
+                return None
+            window = set(trading_days[-n:])
+            vals = [r.get(key) for r in rows if r.get("date") in window]
+            if not vals or any(v is None for v in vals):
+                return None
+            return sum(vals)
+        if len(rows) < n:
+            return None
+        vals = [r.get(key) for r in rows[-n:]]
+        if any(v is None for v in vals):
+            return None
+        return sum(vals)
+
+    main_net = last.get("main_net")
+    return {
+        "main_net": main_net, "main_pct": last.get("main_pct"),
+        "super_net": last.get("super_net"), "super_pct": last.get("super_pct"),
+        "big_net": last.get("big_net"), "big_pct": last.get("big_pct"),
+        "mid_net": last.get("mid_net"), "mid_pct": last.get("mid_pct"),
+        "small_net": last.get("small_net"), "small_pct": last.get("small_pct"),
+        "main_net_5d": window_sum(5, "main_net"),
+        "main_net_10d": window_sum(10, "main_net"),
+        "super_net_5d": window_sum(5, "super_net"),
+        "big_net_5d": window_sum(5, "big_net"),
+        "main_pct_5d": None, "main_pct_10d": None,
+        "super_pct_5d": None, "big_pct_5d": None,
+        "fund_available": main_net is not None,
+        "fund_source": "eastmoney_fflow",
+        "fund_comparable": True,
+        "fund_as_of": last.get("date"),
+    }
+
+
+def em_fetch_flow_quotes(secids: list[str], limit: int = FFLOW_LIMIT,
+                         workers: int = FFLOW_MAX_WORKERS,
+                         max_stocks: int = FFLOW_MAX_STOCKS,
+                         max_consecutive_failures: int = 3) -> dict[str, dict]:
+    """逐票拉资金流日线，还原东财口径的当日 + 多周期资金字段。
+
+    为什么需要这一层：``push2`` 集群（ulist.np 与 clist）会整体限流，实测可以连续
+    数小时全部 ``RemoteDisconnected``，而同家族的 ``push2his`` 通常仍可用。
+    此时若直接退到腾讯/新浪，就会丢掉资金拆解或多周期数据，质量从 full 掉到
+    partial / minimal，跨日分数不再可比。本层用仍然可用的域名把口径补回来。
+
+    **必须温和**（踩过的坑）：东财限流是集群级 + 冷却型的。实测用 6 并发一次性打
+    37 个请求，不但本次失败，还把本来可用的 ``push2his`` 一起打成 RemoteDisconnected，
+    之后的逐日资金明细也一起没了 —— 等于自己制造故障。因此这里：
+    * 并发压到 3，逐批提交并在批间留 0.12 秒间隔；
+    * 连续失败 3 次立即熔断（判定为被限流），不再继续消耗配额；
+    * 熔断或覆盖率不足一半时**整体放弃**，让全部标的统一走新浪口径 ——
+      半套东财 + 半套新浪的混合口径比「统一降级」更糟。
+    """
+    wanted = [s for s in secids if s][:max_stocks]
+    if not wanted:
+        raise SourceFailure("无待回补代码")
+    if len([s for s in secids if s]) > max_stocks:
+        # 涨停家数超过回补上限时**整体不做**，让全部标的统一走下一层。
+        # 「一半东财口径 + 一半新浪口径」会让同一张排行表里的资金因子不可比较，
+        # 比「统一降级、口径一致」更糟。
+        raise SourceFailure(f"待回补 {len([s for s in secids if s])} 只 > 上限 {max_stocks}，"
+                            "为避免混合口径，本次整体跳过回补")
+
+    calendar = market_trading_days()
+    out: dict[str, dict] = {}
+    failures: list[str] = []
+    consecutive = 0
+    aborted = False
+    size = max(1, workers)
+
+    def one(sid: str) -> tuple[str, list[dict]]:
+        return sid.split(".")[-1], em_fetch_flow_history(sid, limit)
+
+    with futures.ThreadPoolExecutor(max_workers=size) as pool:
+        for i in range(0, len(wanted), size):
+            chunk = wanted[i:i + size]
+            futs = {pool.submit(one, s): s for s in chunk}
+            for fut in futures.as_completed(futs):
+                try:
+                    code, rows = fut.result()
+                except Exception as exc:  # noqa: BLE001 - 单票失败不影响其余
+                    failures.append(f"{futs[fut]}:{type(exc).__name__}")
+                    consecutive += 1
+                    if consecutive >= max_consecutive_failures:
+                        aborted = True
+                    continue
+                consecutive = 0
+                fields = fflow_quote_fields(rows, calendar)
+                fields["flow_rows"] = rows
+                out[code] = fields
+            if aborted:
+                break
+            time.sleep(0.12)
+
+    if aborted:
+        raise SourceFailure(f"连续 {max_consecutive_failures} 次失败，判定 push2his 被限流，"
+                            f"已熔断（已取得 {len(out)}/{len(wanted)} 只）")
+    if not out:
+        raise SourceFailure(f"逐票资金流全部失败（{failures[:3]}）")
+    if len(out) < len(wanted) * 0.5:
+        raise SourceFailure(f"逐票资金流覆盖率过低 {len(out)}/{len(wanted)}，疑似限流")
+    return out
+
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +844,8 @@ def ths_fetch_limit_up(day: dt.date) -> dict:
         })
         items.append(item)
 
-    return {"qdate": date_iso(day), "total": total or len(items),
+    return {"qdate": trading_date_from_tencent() or date_iso(day),
+            "total": total or len(items),
             "items": items, "endpoint": THS_API,
             "boards_enriched": bool(boards_map)}
 
@@ -760,8 +971,9 @@ def sina_fetch_pool(kind: str, day: dt.date) -> dict:
 
     if not items and kind != "DT":
         raise SourceFailure(f"新浪榜单未重建出{kind}池")
-    return {"qdate": date_iso(day), "total": len(items), "items": items,
-            "endpoint": SINA_RANK}
+    # 新浪榜单不带日期字段：用指数行情时间戳校准，避免节假日把上一交易日标成今天
+    return {"qdate": trading_date_from_tencent() or date_iso(day),
+            "total": len(items), "items": items, "endpoint": SINA_RANK}
 
 
 def sina_fetch_quotes(codes: list[str]) -> dict[str, dict]:
@@ -849,14 +1061,21 @@ def sina_fetch_flow(codes: list[str], batch: int = 30) -> dict[str, dict]:
     return out
 
 
-def apply_flow_patch(quotes: dict[str, dict], patch: dict[str, dict]) -> int:
+def apply_flow_patch(quotes: dict[str, dict], patch: dict[str, dict],
+                     details: dict[str, list[dict]] | None = None) -> int:
     """把备用资金口径写入已有行情记录（只覆盖资金字段，保留量价来源）。"""
     n = 0
     for code, fields in patch.items():
         q = quotes.get(code)
-        if not q or q.get("fund_available"):
+        if not q:
             continue
-        q.update(fields)
+        rows = fields.get("flow_rows")
+        if rows is not None and details is not None:
+            details[code] = rows
+        if q.get("fund_available"):
+            continue
+        clean = {k: v for k, v in fields.items() if k != "flow_rows"}
+        q.update(clean)
         n += 1
     return n
 
@@ -998,30 +1217,66 @@ def fetch_quotes(secids: list[str], day: dt.date, cfg: dict | None = None,
     merged: dict[str, dict] = {}
     providers_used: dict[str, int] = {}
     attempts: list[dict] = []
+    failed_batches = 0
     for i in range(0, len(secids), batch):
         chunk = secids[i:i + batch]
-        outcome = chain("quotes", _quote_providers(chunk, day, cfg, with_flow),
-                        lambda v: f"{len(v)} 只")
+        try:
+            outcome = chain("quotes", _quote_providers(chunk, day, cfg, with_flow),
+                            lambda v: f"{len(v)} 只")
+        except AllSourcesFailed as exc:
+            # 单批全挂不能让之前批次的结果一起作废：记录后继续下一批
+            failed_batches += 1
+            attempts.extend(exc.attempts)
+            continue
         merged.update(outcome.value)
         providers_used[outcome.label] = providers_used.get(outcome.label, 0) + len(outcome.value)
         attempts.extend(outcome.attempts)
         if i + batch < len(secids):
             time.sleep(0.1)
-    # 资金拆解补齐：主源/榜单通道都拿不到时，用新浪批量资金流补当日四类单。
-    # 该源口径与东财不同，会显式打标，绝不静默混用。
-    missing = [c for c, v in merged.items() if not v.get("fund_available")]
-    filled = 0
-    fund_source = "eastmoney" if any(v.get("fund_available") for v in merged.values()) else "none"
+    if not merged and secids:
+        raise AllSourcesFailed("quotes", attempts)
+
+    # 资金拆解补齐（两级）：
+    #   1) 东财资金流日线逐票回补 —— 与主源同口径，多周期字段可还原（首选）；
+    #   2) 仍缺则用新浪批量资金流补当日四类单 —— 口径不同，必须显式打标。
+    details: dict[str, list[dict]] = {}
     sc = cfg.get("data_sources", {})
-    if missing and sc.get("sina_flow_backfill", True):
+    filled = 0
+
+    def _missing() -> list[str]:
+        return [c for c, v in merged.items() if not v.get("fund_available")]
+
+    if with_flow and _missing() and sc.get("eastmoney", True) and sc.get("flow_backfill", True):
         t0 = time.perf_counter()
+        detail, ok = "", True
         try:
-            patch = sina_fetch_flow(missing)
-            filled = apply_flow_patch(merged, patch)
-            detail = f"补齐 {filled}/{len(missing)} 只当日资金拆解（新浪口径）"
-            ok = True
-            if filled:
-                fund_source = "sina" if fund_source == "none" else "mixed"
+            sid_of = {s.split(".")[-1]: s for s in secids}
+            pend = [sid_of[c] for c in _missing() if c in sid_of]
+            try:
+                cap = int(sc.get("flow_backfill_max", FFLOW_MAX_STOCKS) or FFLOW_MAX_STOCKS)
+            except (TypeError, ValueError):
+                cap = FFLOW_MAX_STOCKS
+            patch = em_fetch_flow_quotes(pend, max_stocks=cap)
+            n = apply_flow_patch(merged, patch, details)
+            filled += n
+            detail = f"逐票回补 {n}/{len(pend)} 只当日与 5/10 日资金（东财口径）"
+        except Exception as exc:  # noqa: BLE001
+            detail, ok = f"{type(exc).__name__}: {str(exc)[:100]}", False
+        rec = {"group": "fund_backfill", "provider": "eastmoney_fflow",
+               "label": "东财资金流日线回补（同口径）", "endpoint": EM_HISTORY_HOSTS[0],
+               "ok": ok, "ms": int((time.perf_counter() - t0) * 1000), "detail": detail}
+        attempts.append(rec)
+        HEALTH.add(**rec)
+
+    if with_flow and _missing() and sc.get("sina_flow_backfill", True):
+        t0 = time.perf_counter()
+        detail, ok = "", True
+        pend = _missing()
+        try:
+            patch = sina_fetch_flow(pend)
+            n = apply_flow_patch(merged, patch)
+            filled += n
+            detail = f"补齐 {n}/{len(pend)} 只当日资金拆解（新浪口径）"
         except Exception as exc:  # noqa: BLE001
             detail, ok = f"{type(exc).__name__}: {str(exc)[:100]}", False
         rec = {"group": "flow_backfill", "provider": "sina_flow",
@@ -1031,6 +1286,20 @@ def fetch_quotes(secids: list[str], day: dt.date, cfg: dict | None = None,
         attempts.append(rec)
         HEALTH.add(**rec)
 
+    # 资金口径归属：按每只票实际写入的 fund_source 汇总，而不是靠中途改标记。
+    # eastmoney 与 eastmoney_fflow 同属东财 fflow 口径（只是取数通道不同），
+    # 混用仍可比；只有掺进新浪「主动买卖单」口径时才算不可比。
+    fund_sources = {v.get("fund_source") for v in merged.values() if v.get("fund_available")}
+    fund_sources.discard(None)
+    if not fund_sources:
+        fund_source = "none"
+    elif fund_sources <= {"eastmoney", "eastmoney_fflow"}:
+        fund_source = "eastmoney" if fund_sources == {"eastmoney"} else "eastmoney_fflow"
+    elif fund_sources == {"sina"}:
+        fund_source = "sina"
+    else:
+        fund_source = "mixed"
+
     meta = {
         "providers": providers_used,
         "coverage": f"{len(merged)}/{len(secids)}",
@@ -1038,7 +1307,9 @@ def fetch_quotes(secids: list[str], day: dt.date, cfg: dict | None = None,
         "fund_coverage": sum(1 for v in merged.values() if v.get("fund_available")),
         "fund_source": fund_source,
         "fund_backfilled": filled,
-        "fund_comparable": fund_source == "eastmoney",
+        "fund_comparable": fund_source in FUND_COMPARABLE_SOURCES,
+        "failed_batches": failed_batches,
+        "flow_details": details,
         "attempts": attempts,
     }
     return merged, meta
@@ -1094,10 +1365,12 @@ def describe_sources(pools: dict[str, Outcome], quotes_meta: dict) -> str:
     parts = ["＋".join(pool_names) if pool_names else "无池数据",
              "＋".join(quote_names) if quote_names else "无行情"]
     fund = quotes_meta.get("fund_source")
-    if fund == "sina":
+    if fund == "eastmoney_fflow":
+        parts.append("主力资金由东财资金流日线回补（同口径，含 5/10 日）")
+    elif fund == "sina":
         parts.append("新浪资金流（口径已切换）")
     elif fund == "mixed":
-        parts.append("资金部分由新浪补齐（混合口径）")
+        parts.append("资金部分由备用源补齐（混合口径）")
     elif fund == "none":
         parts.append("本期无资金拆解")
     return " / ".join(parts)
@@ -1121,17 +1394,29 @@ def build_notes(pools: dict[str, Outcome], quotes_meta: dict,
         if o and o.provider != "eastmoney":
             notes.append(f"{kind} 池已降级到「{o.label}」（{o.endpoint}）")
     used = quotes_meta.get("providers", {})
+    fund = quotes_meta.get("fund_source")
     backfilled = quotes_meta.get("fund_backfilled", 0) > 0
     for label in used:
         if "东方财富" not in label:
-            suffix = ("；当日四类单已由新浪资金流补齐" if backfilled
-                      else "，资金因子按中性 50 分计")
-            notes.append(f"部分行情来自「{label}」，该源不含资金拆解{suffix}")
+            if fund == "eastmoney_fflow":
+                suffix = "；该源不含资金拆解，已由东财资金流日线逐票回补（同口径）"
+            elif backfilled:
+                suffix = "；当日四类单已由备用资金源补齐"
+            else:
+                suffix = "，资金因子按中性 50 分计"
+            notes.append(f"部分行情来自「{label}」{suffix}")
     if not quotes_meta.get("has_fund"):
         notes.append("本期未取到任何主力资金拆解，资金流排行与个股资金图表为空，评分仅基于量价与封板质量")
-    if quotes_meta.get("fund_source") in ("sina", "mixed"):
+    if fund == "eastmoney_fflow":
+        notes.append("东财 push2 当日快照通道被限流，主力资金改由东财资金流日线逐票回补："
+                     "当日与 5/10 日净额同为东财 fflow 口径，可与历史比较；"
+                     "5/10 日净占比（f165/f175）因缺同期成交额留空")
+    if fund in ("sina", "mixed"):
         notes.append("资金拆解已切换到新浪「主动买卖单」口径，与东方财富「大单+超大单」口径不等价，"
                      "跨日分数不可直接比较；且该源不提供 5 日/10 日多周期数据")
+    if quotes_meta.get("failed_batches"):
+        notes.append(f"有 {quotes_meta['failed_batches']} 个行情批次三层数据源全部失败，"
+                     "该批个股的资金/量价字段缺失，相关因子按中性处理")
     if any((i.get("amount_estimated") for o in pools.values()
             if o for i in o.value.get("items", []))):
         notes.append("同花顺源不提供成交额，按「流通市值 × 换手率」推导，仅用于流动性门槛筛选")
@@ -1141,6 +1426,6 @@ def build_notes(pools: dict[str, Outcome], quotes_meta: dict,
                      "无封板时间、封单额、连板数与行业，相关因子按中性处理，跨日分数不可直接比较")
     if cross.get("available") and cross.get("overlap_rate", 100) < 90:
         notes.append(f"交叉校验：{cross['note']}")
-    if quality == "full":
+    if quality == "full" and fund != "eastmoney_fflow":
         notes.append("全部主源可用，数据口径与历史快照一致")
     return notes
