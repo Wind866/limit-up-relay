@@ -2,10 +2,23 @@ name: CI · 语法 / 单元 / 档期一致性
 
 # 本仓库此前零自动化测试，README 与 cron 的时间漂移、以及任何语法错误都无人拦截。
 # 这个门禁只读，不改数据、不推送飞书。
+#
+# 关于 main 分支：原先只对非 main 分支的 push 生效，而本仓库的代码改动往往是直接
+# 提交到 main（含 bot 提交），等于 main 上的代码零校验 —— 2026-11-14 的可靠性修复
+# 推送后 CI 根本没有运行。现改为按路径触发：只改了 docs/data 与 .push-state 的
+# 每日数据提交不会触发，而 src / scripts / tests / config 等变更一定会跑门禁。
 on:
   pull_request:
   push:
-    branches-ignore: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'config.json'
+      - 'requirements.txt'
+      - '.github/workflows/**'
+      - '.github/dependabot.yml'
+      - 'README.md'
   workflow_dispatch:
 
 permissions:
