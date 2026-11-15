@@ -11,10 +11,14 @@ on:
     - cron: '7 5 * * 1-5'    # 周一至周五 13:07 北京时间（盘中快照）
     - cron: '37 7 * * 1-5'   # 周一至周五 15:37 北京时间（收盘定稿）
     # 兜底补档：同账号实测 schedule 常迟到 3.3~9.7 小时、甚至整档丢弃。
-    # 每个档期额外铺一档错开 1 小时，映射到同一个 EXPECT_HHMM / 台账 slot，
-    # 主档成功推送后补档会被幂等守卫秒级跳过，不会重复刷屏。
+    # 全部补档映射到同一个 EXPECT_HHMM / 台账 slot，主档成功推送后会被
+    # 幂等守卫秒级跳过，不会重复刷屏。旧版只铺到 +1h，真正会跑的时刻
+    # （+3~9h）没有任何 cron 档位，等于 Worker 一失效就整档丢失。
     - cron: '7 6 * * 1-5'    # 14:07 → 补 13:07 盘中档
     - cron: '37 8 * * 1-5'   # 16:37 → 补 15:37 收盘档
+    - cron: '7 8 * * 1-5'    # 16:07 → 补 13:07 盘中档  (+3h)
+    - cron: '37 10 * * 1-5'  # 18:37 → 补 15:37 收盘档  (+3h)
+    - cron: '37 14 * * 1-5'  # 22:37 → 补 15:37 收盘档  (+7h)
   # 注意：用 GITHUB_TOKEN 提交的 commit 不会再触发工作流，因此本仓库 bot 的
   # 每日快照提交不会走这条兜底；它只对人工 / 外部推送的 docs/data 变更生效。
   # 「真漏跑时不会有数据提交」—— 所以漏跑补推不能依赖 push 事件，
@@ -44,6 +48,11 @@ on:
         required: false
         default: true
         type: boolean
+      expect_hhmm:
+        description: '本档期 HHMM（由 Cloudflare Worker 传入：1307 / 1537；留空则按当前时间推断）'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -109,18 +118,29 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
       # 把档期对应的计划时刻写进环境变量，供脚本做延迟标注与双档判重。
-      # schedule 触发时直接读 github.event.schedule；外部 Worker 用 workflow_dispatch
-      # 触发时该值为空，按当前北京时间取最接近的档期（13:07 / 15:37）。
+      # 优先级：外部 Worker 显式传入的 expect_hhmm > schedule 的 cron 字符串 >
+      # 按当前北京时间取最接近的档期（仅手动 dispatch 且没传档期号时的兜底）。
       - name: 推导计划时刻（档期 / 延迟标注）
         env:
           SCHEDULE: ${{ github.event.schedule }}
           EVENT: ${{ github.event_name }}
+          # Worker 显式传入的档期号。inputs 一律经 env 传入，不插进 run 脚本。
+          SLOT_HHMM: ${{ inputs.expect_hhmm }}
         run: |
           planned=""
           case "$SCHEDULE" in
-            '37 7 * * 1-5'|'37 8 * * 1-5') planned="1537" ;;
-            '7 5 * * 1-5'|'7 6 * * 1-5')  planned="1307" ;;
+            '37 7 * * 1-5'|'37 8 * * 1-5'|'37 10 * * 1-5'|'37 14 * * 1-5') planned="1537" ;;
+            '7 5 * * 1-5'|'7 6 * * 1-5'|'7 8 * * 1-5')  planned="1307" ;;
           esac
+          # 外部调度器显式带的档期优先。旧版遇到 workflow_dispatch 只能按当前
+          # 北京时间猜「最接近的档期」：Actions 排队到 14:22 之后就会把 13:07
+          # 的盘中快照记成 1537，台账随后把真正的收盘定稿判重跳过（静默漏推）。
+          if [ -n "$SLOT_HHMM" ]; then
+            case "$SLOT_HHMM" in
+              1307|1537) planned="$SLOT_HHMM" ;;
+              *) echo "::warning::非法 expect_hhmm 输入 '$SLOT_HHMM'，忽略" ;;
+            esac
+          fi
           if [ -z "$planned" ] && [ "$EVENT" != "schedule" ]; then
             planned=$(python -c "from datetime import datetime,timezone,timedelta; n=datetime.now(timezone(timedelta(hours=8))); c=n.hour*60+n.minute; print(min(('1307','1537'), key=lambda s: abs(c-int(s[:2])*60-int(s[2:]))))")
           fi
@@ -145,11 +165,17 @@ jobs:
           FORCE_PUSH: ${{ inputs.force && '1' || '' }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           PYTHONIOENCODING: utf-8
+          # workflow_dispatch 的 inputs 只经 env 传入 shell，绝不直接插值进 run:
+          # 一旦某个 input 改成自由文本（或有人通过 API 绕过 choice 校验），
+          # 直接拼接就变成命令注入。
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_FORCE: ${{ inputs.force }}
+          INPUT_PUSH: ${{ inputs.push }}
         run: |
           ARGS=""
-          if [ "${{ inputs.mode }}" = "demo" ]; then ARGS="--demo"; fi
-          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
-          if [ "${{ inputs.push }}" = "false" ]; then ARGS="$ARGS --no-push"; fi
+          if [ "$INPUT_MODE" = "demo" ]; then ARGS="--demo"; fi
+          if [ "$INPUT_FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "$INPUT_PUSH" = "false" ]; then ARGS="$ARGS --no-push"; fi
           python src/run_daily.py $ARGS
 
       # 台账（.push-state）与数据快照必须在**同一次**提交里推上去：
