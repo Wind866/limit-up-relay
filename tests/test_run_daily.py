@@ -14,16 +14,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class TestLateMinutes(unittest.TestCase):
     def test_on_time(self):
-        now = datetime(2026, 11, 16, 15, 37, tzinfo=BJ)
-        self.assertEqual(run_daily.late_minutes(now, "1537"), 0)
+        now = datetime(2026, 11, 16, 18, 53, tzinfo=BJ)
+        self.assertEqual(run_daily.late_minutes(now, "1853"), 0)
 
     def test_late_45_minutes(self):
-        now = datetime(2026, 11, 16, 16, 22, tzinfo=BJ)
-        self.assertEqual(run_daily.late_minutes(now, "1537"), 45)
+        now = datetime(2026, 11, 16, 19, 38, tzinfo=BJ)
+        self.assertEqual(run_daily.late_minutes(now, "1853"), 45)
 
     def test_invalid_expect_returns_zero(self):
         now = datetime(2026, 11, 16, 16, 22, tzinfo=BJ)
-        for bad in ("", "abc", "15:37", "153"):
+        for bad in ("", "abc", "18:53", "185"):
             self.assertEqual(run_daily.late_minutes(now, bad), 0, bad)
 
 
@@ -31,15 +31,15 @@ class TestIntradayGuard(unittest.TestCase):
     """盘中迟到只标注、不拦截推送（旧版曾误拦截导致静默漏推）。"""
 
     def test_close_slot_never_skips(self):
-        self.assertFalse(run_daily.should_skip_intraday_push("1537", 300, "收盘后"))
+        self.assertFalse(run_daily.should_skip_intraday_push("1853", 300, "收盘后"))
 
     def test_intraday_on_time_not_skipped(self):
-        self.assertFalse(run_daily.should_skip_intraday_push("1307", 0, "盘中"))
+        self.assertFalse(run_daily.should_skip_intraday_push("1233", 0, "盘中"))
 
     def test_intraday_very_late_is_flagged_but_not_blocking(self):
         # 返回值只用于卡片标注；这里确认逻辑本身与「小时前缀」一致
-        self.assertTrue(run_daily.should_skip_intraday_push("1307", 95, "收盘后"))
-        self.assertTrue(run_daily.should_skip_intraday_push("1307", 10, "收盘后"))
+        self.assertTrue(run_daily.should_skip_intraday_push("1233", 95, "收盘后"))
+        self.assertTrue(run_daily.should_skip_intraday_push("1233", 10, "收盘后"))
 
 
 class TestMarketStatus(unittest.TestCase):
@@ -67,8 +67,8 @@ class TestScheduleDocsConsistency(unittest.TestCase):
     """
 
     EXPECTED = {
-        "7 5 * * 1-5": "13:07",
-        "37 7 * * 1-5": "15:37",
+        "33 4 * * 1-5": "12:33",
+        "53 10 * * 1-5": "18:53",
     }
 
     def test_workflow_cron_matches_readme(self):
@@ -86,21 +86,22 @@ class TestScheduleDocsConsistency(unittest.TestCase):
     def test_no_stale_times_in_readme(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             readme = fh.read()
-        for stale in ("13:00", "15:30", "0 5 * * 1-5", "30 7 * * 1-5"):
+        for stale in ("13:07", "15:37", "7 5 * * 1-5", "37 7 * * 1-5"):
             self.assertNotIn(stale, readme, f"README 仍残留旧档期 {stale}")
 
     def test_intraday_hour_matches_cron(self):
-        self.assertEqual(run_daily.INTRADAY_HOUR, "13")
+        self.assertEqual(run_daily.INTRADAY_HOUR, "12")
 
     def test_fallback_crons_map_to_original_slots(self):
         """补档 cron 必须在『推导计划时刻』里映射回原档期，否则会被判成未知档期直接失败。"""
         with open(os.path.join(ROOT, ".github", "workflows", "daily.yml"), encoding="utf-8") as fh:
             workflow = fh.read()
         crons = re.findall(r"cron:\s*'([^']+)'", workflow)
-        for fallback in ("7 6 * * 1-5", "37 8 * * 1-5"):
+        for fallback in ("33 5 * * 1-5", "33 7 * * 1-5",
+                         "53 11 * * 1-5", "53 13 * * 1-5", "53 17 * * 1-5"):
             self.assertIn(fallback, crons, f"缺少补档 cron {fallback}")
-        self.assertIn("'7 5 * * 1-5'|'7 6 * * 1-5'", workflow)
-        self.assertIn("'37 7 * * 1-5'|'37 8 * * 1-5'", workflow)
+        self.assertIn("'33 4 * * 1-5'|'33 5 * * 1-5'|'33 7 * * 1-5'", workflow)
+        self.assertIn("'53 10 * * 1-5'|'53 11 * * 1-5'|'53 13 * * 1-5'|'53 17 * * 1-5'", workflow)
 
 
 class TestSessionDate(unittest.TestCase):

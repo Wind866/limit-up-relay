@@ -5,7 +5,7 @@ name: Keep Alive
 # 保证 limit-up-relay 不会掉进「漏跑 → 无提交 → 被禁用 → 更不触发」的闭环。
 on:
   schedule:
-    - cron: '0 17 * * 1'   # UTC 周一 17:00 = 北京周二 01:00
+    - cron: '3 17 * * 1'   # UTC 周一 17:03 = 北京周二 01:03
   workflow_dispatch:
 
 permissions:

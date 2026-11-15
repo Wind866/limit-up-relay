@@ -22,8 +22,8 @@ class TestEditionKey(unittest.TestCase):
         self.assertEqual(push_guard.DEFAULT_CUTOFF_HOUR, 8)
 
     def test_late_night_belongs_to_previous_edition(self):
-        # 晚间 22:13 正常触发与次日 01:25 延迟触发应归到同一档
-        normal = datetime(2026, 11, 16, 22, 13, tzinfo=BJ)
+        # 晚间 21:53 正常触发与次日 01:25 延迟触发应归到同一档
+        normal = datetime(2026, 11, 16, 21, 53, tzinfo=BJ)
         delayed = datetime(2026, 11, 17, 1, 25, tzinfo=BJ)
         self.assertEqual(
             push_guard.edition_date(normal), push_guard.edition_date(delayed)
@@ -31,11 +31,11 @@ class TestEditionKey(unittest.TestCase):
 
     def test_slot_separates_two_editions_same_day(self):
         now = datetime(2026, 11, 16, 16, 0, tzinfo=BJ)
-        a = push_guard.edition_key("daily.yml", slot="1307", cutoff_hour=12, now=now)
-        b = push_guard.edition_key("daily.yml", slot="1537", cutoff_hour=12, now=now)
+        a = push_guard.edition_key("daily.yml", slot="1233", cutoff_hour=12, now=now)
+        b = push_guard.edition_key("daily.yml", slot="1853", cutoff_hour=12, now=now)
         self.assertNotEqual(a, b)
-        self.assertTrue(a.endswith("-1307"))
-        self.assertTrue(b.endswith("-1537"))
+        self.assertTrue(a.endswith("-1233"))
+        self.assertTrue(b.endswith("-1853"))
 
 
 class TestFeishuSign(unittest.TestCase):

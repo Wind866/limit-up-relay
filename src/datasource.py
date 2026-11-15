@@ -253,7 +253,7 @@ def load_demo(path: str) -> dict:
 def load_recent_snapshot(snap_dir: str, before: str) -> dict | None:
     """全部数据源失效时，回退到最近一次真实快照（显式标注为陈旧数据）。"""
     try:
-        # 含当天：15:37 全挂时，13:07 那次成功快照正是最佳回退目标
+        # 含当天：18:53 全挂时，12:33 那次成功快照正是最佳回退目标
         files = sorted(f for f in os.listdir(snap_dir)
                        if f.endswith(".json") and f[:-5] <= before)
     except OSError:

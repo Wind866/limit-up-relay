@@ -6,7 +6,7 @@
     python src/run_daily.py --no-push      # 不推飞书
     python scripts/serve.py                # 本地预览看板 http://127.0.0.1:8000
 
-GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 13:07（盘中快照）、15:37（收盘定稿）自动执行。
+GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 12:33（盘中快照）、18:53（收盘定稿）自动执行。
 """
 
 from __future__ import annotations
@@ -64,19 +64,19 @@ def flag_business_failure(reason: str) -> None:
 
 
 LATE_GRACE_MINUTES = 20          # 超过这个延迟就要在日志与卡片上标注
-INTRADAY_HOUR = "13"             # 盘中快照的计划小时（HH），必须与 daily.yml 的盘中 cron 一致
+INTRADAY_HOUR = "12"             # 盘中快照的计划小时（HH），必须与 daily.yml 的盘中 cron 一致
 INTRADAY_MAX_LATE_MINUTES = 90   # 盘中快照迟到超过该值：卡片标注时点，仍照常推送
 
 
 def late_minutes(now: ds.dt.datetime, expect: str) -> int:
-    """返回比计划时刻晚多少分钟。expect 形如 '1537'，未提供或非法时返回 0。"""
+    """返回比计划时刻晚多少分钟。expect 形如 '1853'，未提供或非法时返回 0。"""
     expect = (expect or "").strip()
     if len(expect) != 4 or not expect.isdigit():
         return 0
     planned = now.replace(hour=int(expect[:2]), minute=int(expect[2:]),
                           second=0, microsecond=0)
     late = int((now - planned).total_seconds() // 60)
-    # 补档跑到了次日凌晨：now - planned 变成负数（如 03:37 − 15:37 = −720），
+    # 补档跑到了次日凌晨：now - planned 变成负数（如 03:53 − 18:53 = −900），
     # 延迟标注会整段消失。往前挪一天再算，卡片上才会如实写「晚了 12 小时」。
     if late <= -12 * 60:
         late += 24 * 60
@@ -115,7 +115,7 @@ def should_skip_intraday_push(expect: str, late: int, status: str) -> bool:
 
     两种情形都算「数据已非盘中口径」：
       1) 迟到 ≥90 分钟；
-      2) 迟到不多但运行时刻已经收盘（如 13:07 的任务 15:10 才起来）。
+      2) 迟到不多但运行时刻已经收盘（如 12:33 的任务 15:10 才起来）。
     用小时前缀判断而非精确比对 HHMM，避免改 cron 时这里忘了同步（旧写法踩过这个坑）。
     """
     if not expect.startswith(INTRADAY_HOUR):
@@ -147,8 +147,8 @@ def main() -> int:
     if catchup:
         log(f"跨夜补跑：运行日 {now.date()} {now:%H:%M} → 按上一交易日 {target} 处理")
 
-    # 盘中快照只对当天有效。13:07 档被拖到次日凌晨才起来时，再去抓一份
-    # 「收盘数据」并塞进 1307 档没有意义（收盘定稿档会覆盖当日结论），
+    # 盘中快照只对当天有效。12:33 档被拖到次日凌晨才起来时，再去抓一份
+    # 「收盘数据」并塞进 1233 档没有意义（收盘定稿档会覆盖当日结论），
     # 直接跳过，别在凌晨刷一条误导性的「盘中快照」。
     expect = os.getenv("EXPECT_HHMM", "")
     if catchup and not args.demo and not args.force and expect.startswith(INTRADAY_HOUR):
@@ -157,7 +157,7 @@ def main() -> int:
 
     # ---------- 0. 定时延迟守卫 ----------
     # GitHub 的 schedule 只保证"尽力而为"，实测可能晚几小时才触发。
-    # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1537），其余触发为空。
+    # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1853），其余触发为空。
     late = late_minutes(now, expect)
     if late >= LATE_GRACE_MINUTES:
         log(f"⚠️ 计划 {expect[:2]}:{expect[2:]} 运行，实际晚了 {late} 分钟（调度延迟）")
@@ -248,7 +248,7 @@ def main() -> int:
                 f"{multi}/{len(qall)} 只")
 
     # ---------- 2. 复盘 ----------
-    # 标记快照口径：15:37 之后才算定稿。若某天收盘那次失败、只留下 13:07 的盘中快照，
+    # 标记快照口径：18:53 之后才算定稿。若某天收盘那次失败、只留下 12:33 的盘中快照，
     # 次日复盘的基准就是盘中数据，必须在复盘口径里说清楚，而不是当成收盘定稿。
     snap["snapshot_kind"] = "close" if (args.demo or status == "收盘后") else "intraday"
     snap_dir = os.path.join(args.root, "data", "snapshots")
@@ -283,7 +283,7 @@ def main() -> int:
             log(f"  - …其余 {len(removed) - 3} 个")
 
     # ---------- 4. 飞书推送 ----------
-    # 双档任务（13:07 / 15:37）共用一个 workflow，用 EXPECT_HHMM 作为 slot，
+    # 双档任务（12:33 / 18:53）共用一个 workflow，用 EXPECT_HHMM 作为 slot，
     # 让台账按「日期-slot」判重，同一天的两个档互不干扰。
     slot = expect if (len(expect) == 4 and expect.isdigit()) else None
     force = os.getenv("FORCE_PUSH") == "1" or args.force

@@ -740,7 +740,7 @@
         ['20cm / 30cm', '波动与回撤大于主板，额外扣 4 分']
       ].map(function (n) { return '<div class="note-item"><b>' + n[0] + '：</b>' + n[1] + '</div>'; }).join('') + '</div>' +
       '<h2 style="margin-top:18px">自动化链路</h2><div class="notes">' + [
-        ['每日运行', 'GitHub Actions 每交易日北京时间 13:07（盘中快照）与 15:37（收盘定稿）各运行一次，自动多源采集、评分、生成快照并推送；节假日通过接口返回日期自动跳过推送。'],
+        ['每日运行', 'GitHub Actions 每交易日北京时间 12:33（盘中快照）与 18:53（收盘定稿）各运行一次，自动多源采集、评分、生成快照并推送；节假日通过接口返回日期自动跳过推送。'],
         ['飞书推送', '交互卡片含情绪概览、Top 候选、主力资金聚焦与按钮：打开看板 / 资金明细 / 数据源状态 / 策略说明 / 标记已阅。降级时卡片会标注口径，支持加签。'],
         ['交互看板', '本页由 GitHub Pages 托管，手机与电脑自适应；可筛选、排序、拖动因子权重实时重排、下钻个股资金与评分。'],
         ['复盘闭环', '每日快照提交进仓库，下一交易日自动计算观察池的次日涨跌、胜率与晋级率，用于检验参数稳健性。'],
@@ -748,7 +748,7 @@
         ['配置位置', '根目录 config.json（权重/阈值）、GitHub Secrets（FEISHU_WEBHOOK / FEISHU_SECRET / PAGES_URL）。']
       ].map(function (n) { return '<div class="note-item"><b>' + n[0] + '：</b>' + n[1] + '</div>'; }).join('') + '</div>' +
       '<h2 style="margin-top:18px">部署与推送配置</h2><div class="notes">' + [
-        ['① 上传到 GitHub', '把整个仓库推到新仓库；.github/workflows/daily.yml 会自动注册每交易日 13:07 / 15:37（北京时间）的定时任务。'],
+        ['① 上传到 GitHub', '把整个仓库推到新仓库；.github/workflows/daily.yml 会自动注册每交易日 12:33 / 18:53（北京时间）的定时任务。'],
         ['② 开启 Pages', '仓库 Settings → Pages → Build and deployment → Source 选「GitHub Actions」；部署完成后得到 https://&lt;用户名&gt;.github.io/&lt;仓库名&gt;/。'],
         ['③ 配置飞书机器人', '飞书群 → 设置 → 群机器人 → 添加自定义机器人；复制 Webhook 地址，建议开启「加签」并复制密钥。'],
         ['④ 配置 Secrets', '仓库 Settings → Secrets and variables → Actions：FEISHU_WEBHOOK（必填）、FEISHU_SECRET（加签必填）、PAGES_URL（可留空，Actions 会自动推导）。'],

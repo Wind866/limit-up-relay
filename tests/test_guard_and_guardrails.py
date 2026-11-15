@@ -34,39 +34,39 @@ class TestLocalLedger(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_first_run_is_not_skipped(self):
-        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1537"))
+        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1853"))
 
     def test_mark_then_skip_roundtrip(self):
-        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1537"))
+        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1853"))
         self.assertTrue(os.path.exists(self.path))
-        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1537"))
+        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1853"))
 
     def test_two_slots_do_not_interfere(self):
-        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1307"))
-        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1537"))
-        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1307"))
+        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1233"))
+        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1853"))
+        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1233"))
 
     def test_mark_is_idempotent(self):
-        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1537")
-        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1537")
+        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1853")
+        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1853")
         with open(self.path, encoding="utf-8") as fh:
             records = json.load(fh)["records"]
-        self.assertEqual(len([r for r in records if r["edition"].endswith("-1537")]), 1)
+        self.assertEqual(len([r for r in records if r["edition"].endswith("-1853")]), 1)
 
     def test_corrupt_ledger_fails_open_and_recovers(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as fh:
             fh.write("{ 这不是 json")
         # 坏台账不能拦住推送
-        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1537"))
+        self.assertFalse(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1853"))
         # 但写入要能自己修复
-        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1537"))
-        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1537"))
+        self.assertTrue(push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1853"))
+        self.assertTrue(push_guard.should_skip("daily.yml", cutoff_hour=12, slot="1853"))
 
     def test_force_overrides_ledger(self):
-        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1537")
+        push_guard.mark_pushed("daily.yml", cutoff_hour=12, slot="1853")
         self.assertFalse(push_guard.should_skip("daily.yml", force=True,
-                                                cutoff_hour=12, slot="1537"))
+                                                cutoff_hour=12, slot="1853"))
 
     def test_ledger_caps_record_count(self):
         records = [{"workflow": "w", "edition": f"d{i}"} for i in range(push_guard.MAX_RECORDS + 30)]
