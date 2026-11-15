@@ -55,7 +55,7 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/alert.py "⚠️ 数据源健康自检任务运行失败，请查看日志" --run-url "$RUN_URL" \
-            || echo "::error::告警发送失败（独立告警通道可能也失效）"
+            || { echo "::error::告警发送失败（独立告警通道可能也失效）"; exit 1; }
 
       # job 被整体取消（timeout / 手动 cancel）时状态是 cancelled，failure() 不会触发。
       - name: 超时 / 取消兜底告警
@@ -69,4 +69,4 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/alert.py "⚠️ 数据源健康自检 job 被取消或超时（failure() 告警不会触发）" --run-url "$RUN_URL" \
-            || echo "::error::告警发送失败（独立告警通道可能也失效）"
+            || { echo "::error::告警发送失败（独立告警通道可能也失效）"; exit 1; }

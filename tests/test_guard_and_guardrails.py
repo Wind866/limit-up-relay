@@ -189,5 +189,46 @@ class TestWorkflowCommitStep(unittest.TestCase):
         self.assertIn("steps.pages.outputs.enabled == 'true'", self.wf)
 
 
+class TestAlertPreflight(unittest.TestCase):
+    """`scripts/alert.py --check`：加签缺失只能靠自查发现，不能靠猜。"""
+
+    @staticmethod
+    def _module():
+        import importlib.util
+        path = os.path.join(ROOT, "scripts", "alert.py")
+        spec = importlib.util.spec_from_file_location("_relay_alert", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_no_webhook_fails_the_check(self):
+        mod = self._module()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(mod.check_env(), 1)
+
+    def test_webhook_without_secret_warns_and_hides_url(self):
+        import contextlib
+        import io
+        mod = self._module()
+        buf = io.StringIO()
+        env = {"FEISHU_WEBHOOK": "https://open.feishu.cn/hook/secret-url"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             contextlib.redirect_stdout(buf):
+            self.assertEqual(mod.check_env(), 0)
+        out = buf.getvalue()
+        self.assertIn("19021", out)
+        self.assertNotIn("secret-url", out)   # 体检输出不落明文 webhook
+
+    def test_sign_error_carries_actionable_hint(self):
+        report = {"meta": {"date": "2026-11-16"}}
+        with mock.patch.dict(os.environ, {"FEISHU_WEBHOOK": "https://x",
+                                          "FEISHU_SECRET": ""}, clear=True), \
+             mock.patch.object(feishu, "build_card", return_value={"elements": []}), \
+             mock.patch.object(feishu, "send", return_value={"code": 19021}):
+            out = feishu.push(report)
+        self.assertFalse(out["ok"])
+        self.assertIn("FEISHU_SECRET", out["hint"])
+
+
 if __name__ == "__main__":
     unittest.main()

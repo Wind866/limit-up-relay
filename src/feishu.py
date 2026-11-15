@@ -18,7 +18,10 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+
+#: 飞书业务码：加签校验失败。HTTP 仍是 200，只看传输层会误判成发送成功。
+SIGN_ERROR_CODE = 19021
+SIGN_HINT = "机器人开启了加签，但 FEISHU_SECRET / ALERT_SECRET 为空或不对"
 
 
 def gen_sign(secret: str, timestamp: str) -> str:
@@ -221,7 +224,13 @@ def push(report: dict, webhook: str | None = None, secret: str | None = None,
     try:
         card = build_card(report, pages_url, repo_url)
         result = send(webhook, secret, card)
+        code = result.get("code", result.get("StatusCode"))
         ok = result.get("StatusCode") == 0 or result.get("code") == 0
-        return {"skipped": False, "ok": ok, "response": result}
+        out = {"skipped": False, "ok": ok, "response": result}
+        # 19021 是「机器人开了加签但没配密钥」，只发生在对方配置变了的时候，
+        # 把根因直接带出去，免得又去翻日志猜「推送为什么没成功」。
+        if not ok and code in (SIGN_ERROR_CODE, str(SIGN_ERROR_CODE)):
+            out["hint"] = SIGN_HINT
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"skipped": False, "ok": False, "error": f"{type(exc).__name__}: {exc}"}

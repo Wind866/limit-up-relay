@@ -21,7 +21,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src import datasource as ds  # noqa: E402
-from src import feishu, push_guard, report, strategy as st  # noqa: E402
+from src import feishu, push_guard, report, retention, strategy as st  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -270,6 +270,18 @@ def main() -> int:
     files = report.write_outputs(result, snap, cfg, args.root)
     log("已生成：" + ", ".join(files))
 
+    # ---------- 3.5 归档保留窗口 ----------
+    # daily/*.json 与 snapshots/*.json 每交易日各新增一份，不设上限一年会长到 40 MB 以上。
+    # 保留期内的文件不动；删掉的是前端下拉（最近 90 天）和复盘（只要上一交易日）都不会再读的。
+    removed = retention.prune_archives(args.root)
+    if removed:
+        log(f"归档清理：删除 {len(removed)} 个超出保留窗口的旧文件"
+            f"（daily 留 {retention.DAILY_KEEP} 天 / snapshots 留 {retention.SNAPSHOT_KEEP} 天）")
+        for path in removed[:3]:
+            log(f"  - {os.path.relpath(path, args.root)}")
+        if len(removed) > 3:
+            log(f"  - …其余 {len(removed) - 3} 个")
+
     # ---------- 4. 飞书推送 ----------
     # 双档任务（13:07 / 15:37）共用一个 workflow，用 EXPECT_HHMM 作为 slot，
     # 让台账按「日期-slot」判重，同一天的两个档互不干扰。
@@ -291,7 +303,10 @@ def main() -> int:
             flag_business_failure(str(push_result.get("reason")))
         elif not push_result.get("skipped") and push_result.get("ok") is not True:
             detail = push_result.get("error") or push_result.get("response") or "未知原因"
-            flag_business_failure(f"飞书推送失败：{str(detail)[:150]}")
+            msg = f"飞书推送失败：{str(detail)[:150]}"
+            if push_result.get("hint"):
+                msg += f"（{push_result['hint']}）"
+            flag_business_failure(msg)
     log(f"飞书推送：{json.dumps(push_result, ensure_ascii=False)[:300]}")
 
     # ---------- 5. 终端摘要 ----------

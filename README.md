@@ -77,6 +77,16 @@ git push -u origin main
    | `ALERT_WEBHOOK` | 建议 | **失败告警专用**机器人 Webhook。不填会退回 `FEISHU_WEBHOOK`，但那样业务机器人故障时告警会一起哑掉 |
    | `ALERT_SECRET` | 建议 | 告警机器人若开启加签则必填（不填会退回 `FEISHU_SECRET`） |
 
+   > **加签要么两个机器人都开，要么都不开。** 只开一半不是「部分失效」而是全链路静默：
+   > 业务推送被拒（`19021`，HTTP 仍 200）→ 触发 `if: failure()` 告警 → 告警机器人同样要求
+   > 加签 → 告警也发不出去。运行页只剩一条 error，群里一条消息都没有。
+   > 改完机器人设置先自查（只读环境变量、不发消息）：`python scripts/alert.py --check`
+
+   ```bash
+   gh secret set FEISHU_SECRET --body '<业务机器人加签密钥>' --repo Wind866/limit-up-relay
+   gh secret set ALERT_SECRET  --body '<告警机器人加签密钥>' --repo Wind866/limit-up-relay
+   ```
+
    仓库地址 `REPO_URL` 由 Actions 自动注入，无需配置。**切勿把真实 webhook/密钥写进文件提交**（`.env.example` 只是模板）。
 5. **Actions → 每日涨停接力策略 → Run workflow**（mode=`close`）手动跑一次验证：飞书收到卡片、Pages 看板能打开、仓库里出现当日快照。
 
@@ -178,12 +188,18 @@ src/push_guard.py                  推送幂等守卫（本地文件台账，随
 config.json                        权重、阈值、分档、data_sources 开关、免责声明
 docs/                         GitHub Pages 看板（index.html / app.js / style.css）
 docs/data/                    看板数据；latest.*、history.*、daily/、review.json、demo.json
-data/snapshots/               每日原始快照，供次日复盘
+docs/data/daily/              每日定稿归档，自动保留最近 120 个交易日
+data/snapshots/               每日原始快照，供次日复盘，自动保留最近 45 个交易日
 .push-state/ledger.json       推送台账（哪个交易日-档期已经推过），由提交步骤一并入库
 scripts/serve.py              本地静态预览服务
 scripts/alert.py              失败告警（飞书文本消息，支持加签）
 tests/                        回归测试（标准库 unittest，CI 自动跑）
 ```
+
+`docs/data/daily/` 与 `data/snapshots/` 每个交易日各新增一个文件，不设上限时仓库会以每
+交易日约 180 KB 无限增长（一年 40 MB 以上），Pages 每次部署都要整目录上传。`src/retention.py`
+在运行末尾按保留窗口清理，窗口都宽于实际读取范围：前端日期下拉读 `history.json`（只留 90 天），
+复盘只需要上一交易日那一份，所以 daily 留 120 天、snapshots 留 45 天，边界那天不会点开 404。
 
 ---
 
