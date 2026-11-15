@@ -34,10 +34,12 @@ jobs:
           python src/check_sources.py --markdown --out docs/data/sources.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: 保存检查结果
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: source-health
           path: docs/data/sources.json
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: 失败告警

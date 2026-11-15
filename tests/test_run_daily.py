@@ -92,6 +92,16 @@ class TestScheduleDocsConsistency(unittest.TestCase):
     def test_intraday_hour_matches_cron(self):
         self.assertEqual(run_daily.INTRADAY_HOUR, "13")
 
+    def test_fallback_crons_map_to_original_slots(self):
+        """补档 cron 必须在『推导计划时刻』里映射回原档期，否则会被判成未知档期直接失败。"""
+        with open(os.path.join(ROOT, ".github", "workflows", "daily.yml"), encoding="utf-8") as fh:
+            workflow = fh.read()
+        crons = re.findall(r"cron:\s*'([^']+)'", workflow)
+        for fallback in ("7 6 * * 1-5", "37 8 * * 1-5"):
+            self.assertIn(fallback, crons, f"缺少补档 cron {fallback}")
+        self.assertIn("'7 5 * * 1-5'|'7 6 * * 1-5'", workflow)
+        self.assertIn("'37 7 * * 1-5'|'37 8 * * 1-5'", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
