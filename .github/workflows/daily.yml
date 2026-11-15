@@ -182,7 +182,8 @@ jobs:
       # 旧版用 Contents API 单独提交台账，会抢先把远端 HEAD 推到前面，
       # 导致紧接着的 git push 变成 non-fast-forward 被拒，进而 Pages 部署被 skip。
       - name: 提交每日快照
-        if: github.event_name != 'push'   # 防止「提交→触发→再提交」死循环
+        # demo 会用演示数据覆盖 docs/data/latest.*，若照常提交/部署会污染生产看板。
+        if: github.event_name != 'push' && inputs.mode != 'demo'   # 防死循环 + 防 demo 污染
         env:
           TZ: Asia/Shanghai
         run: |
@@ -210,18 +211,18 @@ jobs:
           exit 1
 
       - name: 配置 GitHub Pages
-        if: steps.pages.outputs.enabled == 'true'
+        if: steps.pages.outputs.enabled == 'true' && inputs.mode != 'demo'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: 上传 Pages 产物
-        if: steps.pages.outputs.enabled == 'true'
+        if: steps.pages.outputs.enabled == 'true' && inputs.mode != 'demo'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs
 
       - name: 部署 Pages
         id: deploy
-        if: steps.pages.outputs.enabled == 'true'
+        if: steps.pages.outputs.enabled == 'true' && inputs.mode != 'demo'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
       # 业务级失败（数据源降级、飞书漏推）过去被 return 0 吞掉，工作流显示 success，
@@ -256,4 +257,19 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           python scripts/alert.py "⚠️ 涨停接力任务运行失败，请查看日志" --run-url "$RUN_URL" \
+            || echo "::error::告警发送失败（独立告警通道可能也失效）"
+
+      # job 被整体取消（timeout-minutes 到点 / 手动 cancel）时状态是 cancelled 不是
+      # failure，GitHub 不会执行上面那条 if: failure() —— 超时恰恰是最需要告警的时刻。
+      - name: 超时 / 取消兜底告警
+        if: always() && job.status == 'cancelled'
+        env:
+          ALERT_WEBHOOK: ${{ secrets.ALERT_WEBHOOK }}
+          ALERT_SECRET: ${{ secrets.ALERT_SECRET }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/alert.py "⚠️ 涨停接力 job 被取消或超时（failure() 告警不会触发）" --run-url "$RUN_URL" \
             || echo "::error::告警发送失败（独立告警通道可能也失效）"
