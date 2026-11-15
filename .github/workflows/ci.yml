@@ -71,3 +71,27 @@ jobs:
             exit 1
           fi
           echo "全部 Action 已固定到 commit SHA"
+
+      # workflow_dispatch 的 inputs 只经 env 传入 shell。直接插值进 run 脚本时，
+      # 一旦某个 input 改成自由文本（或有人通过 API 绕过 choice 校验）就是命令注入。
+      - name: Workflow 输入注入检查
+        run: |
+          python - <<'PY'
+          import glob
+          import yaml
+
+          bad = []
+          needle = chr(36) + "{{ inputs."
+          for path in sorted(glob.glob('.github/workflows/*.yml')):
+              with open(path, encoding='utf-8') as fh:
+                  doc = yaml.safe_load(fh)
+              for job in (doc.get('jobs') or {}).values():
+                  for step in job.get('steps', []):
+                      if needle in (step.get('run') or ''):
+                          bad.append(f"{path}: {step.get('name', '(未命名步骤)')}")
+          if bad:
+              for item in bad:
+                  print(f"::error::{item} 把 inputs 直接插入了 run 脚本")
+              raise SystemExit(1)
+          print('未发现 workflow inputs 源码插值')
+          PY

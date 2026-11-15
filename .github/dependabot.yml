@@ -1,4 +1,6 @@
 version: 2
+# 限额 5 曾被 5 个跨大版本的 Action 升级 PR 占满，之后的安全补丁再也开不出
+# 新 PR。提高到 10；跨大版本（v4→v7 之类）必须人工评估后再合并，不要自动合。
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -7,7 +9,7 @@ updates:
       day: "monday"
       time: "09:30"
       timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     labels:
       - "dependencies"
       - "security"
