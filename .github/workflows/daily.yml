@@ -189,6 +189,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 留存策略：docs/data/daily 与 data/snapshots 都是「每天一份」，
+          # 过去没有清理，仓库会单向膨胀（每月 +10MB 量级，且永不回退）。
+          # 日报保留 90 天，与 history.json 的 90 条索引上限对齐（否则索引里
+          # 会有指向已被删文件的行）；原始快照只服务次日复盘与降级兜底，留 30 天。
+          # 按文件名（YYYY-MM-DD.json）排序裁剪，而不是 mtime —— 全新 checkout
+          # 会把所有文件 mtime 重置成检出时间，用 -mtime 会把历史全删了。
+          ls docs/data/daily/*.json 2>/dev/null | sort | head -n -90 | xargs -r rm -f --
+          ls data/snapshots/*.json 2>/dev/null | sort | head -n -30 | xargs -r rm -f --
           git add docs/data data/snapshots .push-state
           if git diff --staged --quiet; then
             echo "数据无变化，跳过提交"

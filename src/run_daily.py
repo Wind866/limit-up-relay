@@ -75,7 +75,39 @@ def late_minutes(now: ds.dt.datetime, expect: str) -> int:
         return 0
     planned = now.replace(hour=int(expect[:2]), minute=int(expect[2:]),
                           second=0, microsecond=0)
-    return int((now - planned).total_seconds() // 60)
+    late = int((now - planned).total_seconds() // 60)
+    # 补档跑到了次日凌晨：now - planned 变成负数（如 03:37 − 15:37 = −720），
+    # 延迟标注会整段消失。往前挪一天再算，卡片上才会如实写「晚了 12 小时」。
+    if late <= -12 * 60:
+        late += 24 * 60
+    return late
+
+
+MARKET_OPEN_HHMM = 9 * 60 + 15   # 集合竞价开始；此前 A 股不可能产生当日行情
+
+
+def session_date(now: ds.dt.datetime) -> ds.dt.date:
+    """本次运行真正该处理的交易日（跨午夜补档的锚点）。
+
+    GitHub cron 实测会迟到 3~10 小时。22:37 的收盘兜底档一旦拖过午夜才起来，
+    旧逻辑把「运行日」当「数据日」，于是：
+
+      * 撞上周末 → `target.weekday() >= 5` 直接判休市退出；
+      * 工作日 → 接口返回的 qdate 是 yesterday，`qdate != target` 又被判成
+        节假日、置 `no_push`。
+
+    两条路都是静默退出，前一交易日的收盘定稿就此永久丢失 —— 深夜兜底档
+    等于白铺。A 股 09:15 之前不可能有当日行情，所以盘前（含周末）运行的
+    运行日必然不是数据日，真正要处理的是上一个工作日。
+
+    开盘之后仍按运行日；`--date` 显式指定时以参数为准（见 main）。
+    """
+    d = now.date()
+    if now.weekday() >= 5 or (now.hour * 60 + now.minute) < MARKET_OPEN_HHMM:
+        d -= ds.dt.timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= ds.dt.timedelta(days=1)
+    return d
 
 
 def should_skip_intraday_push(expect: str, late: int, status: str) -> bool:
@@ -105,17 +137,27 @@ def main() -> int:
         cfg = json.load(fh)
 
     now = ds.now_cn()
-    target = ds.dt.date.fromisoformat(args.date) if args.date else now.date()
-    status = market_status(now)
-    if target != now.date():
-        # 用 --date 回看历史日期时，那次交易早已收盘；按「当前时刻」判成「休市」
-        # 会让卡片和快照口径标签失真（还会把 snapshot_kind 误标成盘中）。
-        status = "收盘后"
+    if args.date:
+        target = ds.dt.date.fromisoformat(args.date)
+    else:
+        target = session_date(now)
+    # 补档跨过午夜时，数据属于上一交易日：口径一律按「收盘后」标注
+    catchup = target != now.date()
+    status = "收盘后" if catchup else market_status(now)
+    if catchup:
+        log(f"跨夜补跑：运行日 {now.date()} {now:%H:%M} → 按上一交易日 {target} 处理")
+
+    # 盘中快照只对当天有效。13:07 档被拖到次日凌晨才起来时，再去抓一份
+    # 「收盘数据」并塞进 1307 档没有意义（收盘定稿档会覆盖当日结论），
+    # 直接跳过，别在凌晨刷一条误导性的「盘中快照」。
+    expect = os.getenv("EXPECT_HHMM", "")
+    if catchup and not args.demo and not args.force and expect.startswith(INTRADAY_HOUR):
+        log(f"盘中档（{expect}）跨夜补跑已失去时效，跳过；收盘定稿档负责当日结论")
+        return 0
 
     # ---------- 0. 定时延迟守卫 ----------
     # GitHub 的 schedule 只保证"尽力而为"，实测可能晚几小时才触发。
     # EXPECT_HHMM 由 workflow 在 schedule 触发时注入（如 1537），其余触发为空。
-    expect = os.getenv("EXPECT_HHMM", "")
     late = late_minutes(now, expect)
     if late >= LATE_GRACE_MINUTES:
         log(f"⚠️ 计划 {expect[:2]}:{expect[2:]} 运行，实际晚了 {late} 分钟（调度延迟）")
