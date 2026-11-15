@@ -189,14 +189,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 留存策略：docs/data/daily 与 data/snapshots 都是「每天一份」，
-          # 过去没有清理，仓库会单向膨胀（每月 +10MB 量级，且永不回退）。
-          # 日报保留 90 天，与 history.json 的 90 条索引上限对齐（否则索引里
-          # 会有指向已被删文件的行）；原始快照只服务次日复盘与降级兜底，留 30 天。
-          # 按文件名（YYYY-MM-DD.json）排序裁剪，而不是 mtime —— 全新 checkout
-          # 会把所有文件 mtime 重置成检出时间，用 -mtime 会把历史全删了。
-          ls docs/data/daily/*.json 2>/dev/null | sort | head -n -90 | xargs -r rm -f --
-          ls data/snapshots/*.json 2>/dev/null | sort | head -n -30 | xargs -r rm -f --
+          # 留存策略集中在 src/retention.py（daily 120 天 / snapshots 45 天），
+          # 由 run_daily 在写盘后统一清理。这里刻意不再重复裁剪：两处各写一个
+          # 天数时，实际生效的永远是更小的那个，retention.py 的常量会变成摆设
+          # （旧版这里写 90/30，与模块里的 120/45 打架）。
+          # 注意：清理只改工作区，git 历史里的旧文件仍在，仓库体积不会因此变小。
           git add docs/data data/snapshots .push-state
           if git diff --staged --quiet; then
             echo "数据无变化，跳过提交"
