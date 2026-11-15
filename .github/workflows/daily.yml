@@ -222,7 +222,7 @@ jobs:
       - name: 部署 Pages
         id: deploy
         if: steps.pages.outputs.enabled == 'true'
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
       # 业务级失败（数据源降级、飞书漏推）过去被 return 0 吞掉，工作流显示 success，
       # failure() 告警不触发。放在 Pages 部署之后：看板照常更新，最后一步判红并告警。
