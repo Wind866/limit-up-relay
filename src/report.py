@@ -117,7 +117,7 @@ def compute_review(snap: dict, cfg: dict, snapshot_dir: str) -> dict:
     hour = ds.now_cn().hour + ds.now_cn().minute / 60
     intraday = ds.now_cn().date().isoformat() == today and hour < 15.05
 
-    # 上一份快照若是 12:33 的盘中口径（当天收盘那次没跑成功），复盘基准就不是定稿，
+    # 上一份快照若是盘中口径（当天收盘档没跑成功、只留下手动盘中运行），复盘基准就不是定稿，
     # 这个偏差必须显式写出来，否则会被当成「策略在收盘价上的真实表现」。
     prev_kind = prev.get("snapshot_kind")
     caveat = ("模拟跟踪口径：按前收盘价计算次日涨跌幅，未考虑一字板无法成交、"

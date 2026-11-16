@@ -27,21 +27,6 @@ class TestLateMinutes(unittest.TestCase):
             self.assertEqual(run_daily.late_minutes(now, bad), 0, bad)
 
 
-class TestIntradayGuard(unittest.TestCase):
-    """盘中迟到只标注、不拦截推送（旧版曾误拦截导致静默漏推）。"""
-
-    def test_close_slot_never_skips(self):
-        self.assertFalse(run_daily.should_skip_intraday_push("1853", 300, "收盘后"))
-
-    def test_intraday_on_time_not_skipped(self):
-        self.assertFalse(run_daily.should_skip_intraday_push("1233", 0, "盘中"))
-
-    def test_intraday_very_late_is_flagged_but_not_blocking(self):
-        # 返回值只用于卡片标注；这里确认逻辑本身与「小时前缀」一致
-        self.assertTrue(run_daily.should_skip_intraday_push("1233", 95, "收盘后"))
-        self.assertTrue(run_daily.should_skip_intraday_push("1233", 10, "收盘后"))
-
-
 class TestMarketStatus(unittest.TestCase):
     def test_weekend(self):
         self.assertEqual(run_daily.market_status(datetime(2026, 11, 14, 10, 0, tzinfo=BJ)), "休市")
@@ -63,11 +48,11 @@ class TestScheduleDocsConsistency(unittest.TestCase):
     """README 曾长期写 13:00/15:30，而 cron 实际是 13:07/15:37。
 
     档期常量分散在 workflow / 脚本 / 文档多处，提交历史里已两次因不同步出错，
-    这条用例把漂移变成 CI 红灯。
+    这条用例把漂移变成 CI 红灯。中午 12:33 的盘中档下线后，EXPECTED 只保留收盘档，
+    另加一条用例确保盘中 cron 不会被悄悄加回来。
     """
 
     EXPECTED = {
-        "33 4 * * 1-5": "12:33",
         "53 10 * * 1-5": "18:53",
     }
 
@@ -89,18 +74,26 @@ class TestScheduleDocsConsistency(unittest.TestCase):
         for stale in ("13:07", "15:37", "7 5 * * 1-5", "37 7 * * 1-5"):
             self.assertNotIn(stale, readme, f"README 仍残留旧档期 {stale}")
 
-    def test_intraday_hour_matches_cron(self):
-        self.assertEqual(run_daily.INTRADAY_HOUR, "12")
+    def test_intraday_slot_retired(self):
+        """中午 12:33 盘中档已下线：workflow 不能再注册盘中 cron，脚本要保留下线常量。"""
+        with open(os.path.join(ROOT, ".github", "workflows", "daily.yml"), encoding="utf-8") as fh:
+            workflow = fh.read()
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+
+        for cron in ("33 4 * * 1-5", "33 5 * * 1-5", "33 7 * * 1-5"):
+            self.assertNotIn(f"cron: '{cron}'", workflow, f"daily.yml 仍注册了盘中 cron {cron}")
+        self.assertEqual(run_daily.RETIRED_SLOT, "1233")
+        self.assertFalse(hasattr(run_daily, "INTRADAY_HOUR"), "盘中档逻辑应已移除")
+        self.assertIn("12:33 的盘中快照档已下线", readme, "README 需说明中午档已下线")
 
     def test_fallback_crons_map_to_original_slots(self):
         """补档 cron 必须在『推导计划时刻』里映射回原档期，否则会被判成未知档期直接失败。"""
         with open(os.path.join(ROOT, ".github", "workflows", "daily.yml"), encoding="utf-8") as fh:
             workflow = fh.read()
         crons = re.findall(r"cron:\s*'([^']+)'", workflow)
-        for fallback in ("33 5 * * 1-5", "33 7 * * 1-5",
-                         "53 11 * * 1-5", "53 13 * * 1-5", "53 17 * * 1-5"):
+        for fallback in ("53 11 * * 1-5", "53 13 * * 1-5", "53 17 * * 1-5"):
             self.assertIn(fallback, crons, f"缺少补档 cron {fallback}")
-        self.assertIn("'33 4 * * 1-5'|'33 5 * * 1-5'|'33 7 * * 1-5'", workflow)
         self.assertIn("'53 10 * * 1-5'|'53 11 * * 1-5'|'53 13 * * 1-5'|'53 17 * * 1-5'", workflow)
 
 

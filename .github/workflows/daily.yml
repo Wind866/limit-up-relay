@@ -1,21 +1,20 @@
 name: 每日涨停接力策略
 
-# 北京时间 = UTC+8。每个交易日跑两次，两次都会推送飞书：
-#   12:33 盘中实时快照（UTC 04:33）→ 观察上午封板与资金变化
+# 北京时间 = UTC+8。每个交易日只跑一次收盘定稿，并且只推送一次飞书：
 #   18:53 收盘定稿（UTC 10:53）→ 次日接力观察池正式版
+# 中午 12:33 的盘中快照档已于 2026-11-16 下线（不再采集、不再推送）：
+#   schedule 已无盘中 cron；外部调度器若仍按旧档期表 dispatch expect_hhmm=1233，
+#   job 层的 if 会直接跳过整次运行，run_daily 也有同样的兜底判断。
 # 分钟数刻意避开 :00 / :30 —— 整点是 GitHub 调度器最拥堵的时刻。
 # 准点由 Cloudflare Worker（见 BIGApush/cloudflare/README.md）workflow_dispatch；
-# 下面的 cron 只作兜底。两个档期靠 EXPECT_HHMM 区分，台账守卫按「日期-slot」判重。
+# 下面的 cron 只作兜底。档期靠 EXPECT_HHMM 区分，台账守卫按「日期-slot」判重。
 on:
   schedule:
-    - cron: '33 4 * * 1-5'   # 周一至周五 12:33 北京时间（盘中快照）
     - cron: '53 10 * * 1-5'  # 周一至周五 18:53 北京时间（收盘定稿）
     # 兜底补档：同账号实测 schedule 常迟到 3.3~9.7 小时、甚至整档丢弃。
     # 全部补档映射到同一个 EXPECT_HHMM / 台账 slot，主档成功推送后会被
     # 幂等守卫秒级跳过，不会重复刷屏。旧版只铺到 +1h，真正会跑的时刻
     # （+3~9h）没有任何 cron 档位，等于 Worker 一失效就整档丢失。
-    - cron: '33 5 * * 1-5'   # 13:33 → 补 12:33 盘中档
-    - cron: '33 7 * * 1-5'   # 15:33 → 补 12:33 盘中档  (+3h)
     - cron: '53 11 * * 1-5'  # 19:53 → 补 18:53 收盘档
     - cron: '53 13 * * 1-5'  # 21:53 → 补 18:53 收盘档  (+3h)
     - cron: '53 17 * * 1-5'  # 次日 01:53 → 补 18:53 收盘档  (+7h)
@@ -49,7 +48,7 @@ on:
         default: true
         type: boolean
       expect_hhmm:
-        description: '本档期 HHMM（由 Cloudflare Worker 传入：1233 / 1853；留空则按当前时间推断）'
+        description: '本档期 HHMM（由 Cloudflare Worker 传入：1853；留空则按收盘档 1853 推断）'
         required: false
         default: ''
         type: string
@@ -66,6 +65,10 @@ concurrency:
 
 jobs:
   daily:
+    # 中午 12:33 盘中档已下线：外部调度器（BIGApush 的 Cloudflare Worker）在它自己的
+    # PLAN 表更新前，仍会按时 dispatch expect_hhmm=1233。这里在 job 层直接跳过整次运行，
+    # 既不推送、也不写快照与台账；schedule / 不带该输入的手动运行条件恒为真。
+    if: github.event.inputs.expect_hhmm != '1233'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -117,9 +120,9 @@ jobs:
           PAGES_URL: ${{ secrets.PAGES_URL }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
-      # 把档期对应的计划时刻写进环境变量，供脚本做延迟标注与双档判重。
-      # 优先级：外部 Worker 显式传入的 expect_hhmm > schedule 的 cron 字符串 >
-      # 按当前北京时间取最接近的档期（仅手动 dispatch 且没传档期号时的兜底）。
+      # 把档期对应的计划时刻写进环境变量，供脚本做延迟标注与台账判重。
+      # 只有一个收盘档（1853）：schedule 的 cron 字符串与外部 Worker 传入的档期号
+      # 都归一到 1853；中午 12:33 已下线，任何带 1233 的触发都不再被识别为有效档期。
       - name: 推导计划时刻（档期 / 延迟标注）
         env:
           SCHEDULE: ${{ github.event.schedule }}
@@ -130,28 +133,32 @@ jobs:
           planned=""
           case "$SCHEDULE" in
             '53 10 * * 1-5'|'53 11 * * 1-5'|'53 13 * * 1-5'|'53 17 * * 1-5') planned="1853" ;;
-            '33 4 * * 1-5'|'33 5 * * 1-5'|'33 7 * * 1-5')  planned="1233" ;;
           esac
           # 外部调度器显式带的档期优先。旧版遇到 workflow_dispatch 只能按当前
-          # 北京时间猜「最接近的档期」：Actions 排队到 15:53 之后就会把 12:33
-          # 的盘中快照记成 1853，台账随后把真正的收盘定稿判重跳过（静默漏推）。
+          # 北京时间猜「最接近的档期」：Actions 排队到 15:53 之后就会把档期记错，
+          # 台账随后把真正的收盘定稿判重跳过（静默漏推）。
           if [ -n "$SLOT_HHMM" ]; then
             case "$SLOT_HHMM" in
-              1233|1853) planned="$SLOT_HHMM" ;;
+              1853) planned="$SLOT_HHMM" ;;
+              # 已下线的盘中档：保留原值传下去，由 run_daily 的下线守卫负责跳过并说明原因，
+              # 绝不落回 1853 —— 否则中午会推一条标着「收盘定稿」的卡片。
+              1233) planned="$SLOT_HHMM"
+                    echo "::warning::中午 12:33 盘中档已下线，本次触发应被 job 层跳过；如未跳过请同步更新 Worker 档期表" ;;
               *) echo "::warning::非法 expect_hhmm 输入 '$SLOT_HHMM'，忽略" ;;
             esac
           fi
-          if [ -z "$planned" ] && [ "$EVENT" != "schedule" ]; then
-            planned=$(python -c "from datetime import datetime,timezone,timedelta; n=datetime.now(timezone(timedelta(hours=8))); c=n.hour*60+n.minute; print(min(('1233','1853'), key=lambda s: abs(c-int(s[:2])*60-int(s[2:]))))")
+          # 只有收盘档：手动 dispatch 未带档期号时直接按 1853 处理，不再按时钟猜档。
+          if [ -z "$planned" ] && [ "$EVENT" != "schedule" ] && [ -z "$SLOT_HHMM" ]; then
+            planned="1853"
           fi
           echo "EXPECT_HHMM=$planned" >> "$GITHUB_ENV"
           if [ -n "$planned" ]; then
             echo "计划时刻：${planned:0:2}:${planned:2} —— 档期守卫已启用"
           elif [ "$EVENT" = "schedule" ]; then
-            echo "::error::cron「$SCHEDULE」在本步骤没有对应时刻，双档判重会失效。请同步 on.schedule 与这里的分支。"
+            echo "::error::cron「$SCHEDULE」在本步骤没有对应时刻，台账判重会失效。请同步 on.schedule 与这里的分支。"
             exit 1
           else
-            echo "计划时刻：（$EVENT 触发，不做延迟判定）"
+            echo "计划时刻：（$EVENT 触发，未给有效档期，不做延迟判定）"
           fi
 
       - name: 运行策略（采集 / 复盘 / 评分 / 推送）
