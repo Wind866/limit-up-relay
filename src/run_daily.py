@@ -8,6 +8,7 @@
 
 GitHub Actions：见 .github/workflows/daily.yml，交易日北京时间 18:53（收盘定稿）自动执行。
 中午 12:33 的盘中快照档已下线，不再采集、也不再推送飞书。
+跨日守卫：收盘定稿只限目标交易日当天完成；拖到次日则跳过推送并告警（--force 绕过）。
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ def log(msg: str) -> None:
     print(f"[relay] {msg}", flush=True)
 
 
-# 业务级失败清单：数据源降级、飞书漏推等过去都 return 0，工作流判 success，
+# 业务级失败清单：数据源降级、飞书漏推、跨日运行等过去都 return 0，工作流判 success，
 # failure() 告警永远不会触发 —— 静默漏推。这里不中断主流程（看板仍要出），
 # 只把状态写进 GITHUB_OUTPUT，由 workflow 末尾的「业务健康检查」步骤判失败并告警。
 BUSINESS_ISSUES: list[str] = []
@@ -101,6 +102,10 @@ def session_date(now: ds.dt.datetime) -> ds.dt.date:
     运行日必然不是数据日，真正要处理的是上一个工作日。
 
     开盘之后仍按运行日；`--date` 显式指定时以参数为准（见 main）。
+
+    注意：自「当天任务当天完成」守卫上线后，自动触发的任务若真的跨到次日，
+    会在 main() 的守卫处直接告警退出，不会再走到这里做补跑。此函数的回退
+    仅服务于 --force / --demo / --date 等人工明确指定的场景。
     """
     d = now.date()
     if now.weekday() >= 5 or (now.hour * 60 + now.minute) < MARKET_OPEN_HHMM:
@@ -115,7 +120,7 @@ def main() -> int:
     ap.add_argument("--date", help="目标日期 YYYY-MM-DD，默认今天（北京时间）")
     ap.add_argument("--demo", action="store_true", help="使用随仓库附带的历史真实快照样本")
     ap.add_argument("--no-push", action="store_true", help="不推送飞书")
-    ap.add_argument("--force", action="store_true", help="跳过交易日检查 / 强制推送")
+    ap.add_argument("--force", action="store_true", help="跳过交易日检查 / 强制推送 / 允许跨日补跑")
     ap.add_argument("--config", default=os.path.join(ROOT, "config.json"))
     ap.add_argument("--root", default=ROOT)
     args = ap.parse_args()
@@ -154,6 +159,23 @@ def main() -> int:
 
     if target.weekday() >= 5 and not args.force and not args.demo:
         log(f"{target} 为周末，非交易日，跳过（--force 可强制运行）")
+        return 0
+
+    # ---------- 0.5 跨日守卫：当天任务当天完成 ----------
+    # 收盘定稿只限目标交易日当天完成。若因 Actions 调度延迟拖到次日才起来，
+    # session_date() 会把 target 回退到上一交易日（catchup=True）：此时不采集、
+    # 不推送、不写台账，改为标记业务失败，由 workflow 的「业务健康检查」判红并
+    # 在「失败告警」里带上具体原因。
+    # 例外：--force（人工明确要补跑）/ --demo（离线演示）/ --date（显式指定）不受限。
+    if catchup and not args.force and not args.demo and not args.date:
+        reason = (
+            f"任务跨日运行：计划交易日 {target}，实际运行于 "
+            f"{now:%Y-%m-%d %H:%M}（北京时间），已超过当天。"
+            "按「当天任务当天完成」规则已跳过采集与推送；"
+            "确需补跑请在 Actions 手动运行时勾选 force"
+        )
+        flag_business_failure(reason)
+        log("⛔ " + reason)
         return 0
 
     # ---------- 1. 采集 ----------
