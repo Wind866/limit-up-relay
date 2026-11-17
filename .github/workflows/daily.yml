@@ -8,16 +8,18 @@ name: 每日涨停接力策略
 # 分钟数刻意避开 :00 / :30 —— 整点是 GitHub 调度器最拥堵的时刻。
 # 准点由 Cloudflare Worker（见 BIGApush/cloudflare/README.md）workflow_dispatch；
 # 下面的 cron 只作兜底。档期靠 EXPECT_HHMM 区分，台账守卫按「日期-slot」判重。
+# 当天任务当天完成：兜底 cron 全部收敛在当天（最晚 21:53），不再铺次日凌晨档；
+# 若调度延迟到次日才触发，run_daily 判为跨日、不采集不推送并告警（--force 可绕过）。
 on:
   schedule:
     - cron: '53 10 * * 1-5'  # 周一至周五 18:53 北京时间（收盘定稿）
     # 兜底补档：同账号实测 schedule 常迟到 3.3~9.7 小时、甚至整档丢弃。
     # 全部补档映射到同一个 EXPECT_HHMM / 台账 slot，主档成功推送后会被
-    # 幂等守卫秒级跳过，不会重复刷屏。旧版只铺到 +1h，真正会跑的时刻
-    # （+3~9h）没有任何 cron 档位，等于 Worker 一失效就整档丢失。
+    # 幂等守卫秒级跳过，不会重复刷屏。
+    # 只铺当天档，最晚 21:53（+3h）；不再铺次日凌晨档 —— 当天的任务当天完成，
+    # 拖到次日由 run_daily 判跨日并告警，而不是静默补跑上一交易日的数据。
     - cron: '53 11 * * 1-5'  # 19:53 → 补 18:53 收盘档
     - cron: '53 13 * * 1-5'  # 21:53 → 补 18:53 收盘档  (+3h)
-    - cron: '53 17 * * 1-5'  # 次日 01:53 → 补 18:53 收盘档  (+7h)
   # 注意：用 GITHUB_TOKEN 提交的 commit 不会再触发工作流，因此本仓库 bot 的
   # 每日快照提交不会走这条兜底；它只对人工 / 外部推送的 docs/data 变更生效。
   # 「真漏跑时不会有数据提交」—— 所以漏跑补推不能依赖 push 事件，
@@ -132,7 +134,7 @@ jobs:
         run: |
           planned=""
           case "$SCHEDULE" in
-            '53 10 * * 1-5'|'53 11 * * 1-5'|'53 13 * * 1-5'|'53 17 * * 1-5') planned="1853" ;;
+            '53 10 * * 1-5'|'53 11 * * 1-5'|'53 13 * * 1-5') planned="1853" ;;
           esac
           # 外部调度器显式带的档期优先。旧版遇到 workflow_dispatch 只能按当前
           # 北京时间猜「最接近的档期」：Actions 排队到 15:53 之后就会把档期记错，
@@ -237,9 +239,9 @@ jobs:
         if: steps.pages.outputs.enabled == 'true' && inputs.mode != 'demo'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
-      # 业务级失败（数据源降级、飞书漏推）过去被 return 0 吞掉，工作流显示 success，
+      # 业务级失败（数据源降级、飞书漏推、跨日运行）过去被 return 0 吞掉，工作流显示 success，
       # failure() 告警不触发。放在 Pages 部署之后：看板照常更新，最后一步判红并告警。
-      - name: 业务健康检查（降级 / 漏推不可静默）
+      - name: 业务健康检查（降级 / 漏推 / 跨日不可静默）
         if: always() && github.event_name != 'push'
         env:
           BUSINESS_OK: ${{ steps.strategy.outputs.business_ok }}
@@ -258,6 +260,7 @@ jobs:
 
       # 告警必须支持加签：飞书机器人开启「加签」后，未带 sign 的消息会被直接拒（19021），
       # 原来裸 curl 发文本等于告警永久哑掉。这里改用 scripts/alert.py 复用签名逻辑。
+      # 带上 BUSINESS_ISSUE，让飞书告警直接说明是跨日 / 降级 / 漏推，而不是一句笼统的「运行失败」。
       - name: 失败告警
         if: failure()
         env:
@@ -266,9 +269,14 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUSINESS_ISSUE: ${{ steps.strategy.outputs.business_issue }}
           PYTHONIOENCODING: utf-8
         run: |
-          python scripts/alert.py "⚠️ 涨停接力任务运行失败，请查看日志" --run-url "$RUN_URL" \
+          MSG="⚠️ 涨停接力任务运行失败，请查看日志"
+          if [ -n "$BUSINESS_ISSUE" ]; then
+            MSG="⚠️ 涨停接力任务异常：$BUSINESS_ISSUE"
+          fi
+          python scripts/alert.py "$MSG" --run-url "$RUN_URL" \
             || { echo "::error::告警发送失败（独立告警通道可能也失效）"; exit 1; }
 
       # job 被整体取消（timeout-minutes 到点 / 手动 cancel）时状态是 cancelled 不是
